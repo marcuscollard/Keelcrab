@@ -501,7 +501,7 @@ class Hull_Parameterization:
         BOOL_PTS_OR_SPACE controls whether a set number of points will produce the waterline (1) or the spacing vector will(0)
         
         '''
-       
+        
         x1 = self.bow_profile(z)
         
         x2 = self.delta_bow(z)
@@ -1983,9 +1983,288 @@ class Hull_Parameterization:
         print('Number of Triangles: ', numTriangles)
             
         HULL.save(namepath + '.stl')
+                
         return HULL
     
  
+    def gen_USD(self, NUM_WL = 50, PointsPerWL = 300, bit_AddTransom = 1, bit_AddDeckLid = 0, bit_RefineBowAndStern = 0, namepath = 'Hull_Mesh', require_convex=False):
+        # This function generates a surface of the mesh by iterating through the points on the waterlines
+        
+        #compute number of triangles in the mesh
+        #hullTriangles = 2 * (2*PointsPerWL - 2) * (NUM_WL - 1)
+        #numTriangles = hullTriangles
+        transomTriangles = 0
+
+        #Generate WL
+        z = np.zeros((NUM_WL,))
+        
+        z[0] = 0.0001*self.Dd
+        z[1] = 0.001*self.Dd
+        z[2:] = np.linspace(0.0, self.Dd, NUM_WL - 2)
+        
+        z = np.sort(z)
+
+        x = np.linspace(-self.LOA*0.5,1.5*self.LOA, 2*PointsPerWL - 1)
+
+        if bit_RefineBowAndStern:
+            # Add more points to X in the bow and stern
+            
+            x_sub1 = x[0:int(0.75*PointsPerWL)] + 0.5*(x[1] - x[0])
+            x_sub2 = x[-int(0.75*PointsPerWL):] + 0.5*(x[1] - x[0])
+            x = np.concatenate((x_sub1, x_sub2, x))
+            x = np.sort(x)
+
+        
+    
+        #Generate MeshGrid PC
+        pts = self.gen_MeshGridPointCloud(NUM_WL = NUM_WL, PointsPerLOA = PointsPerWL, Z = z, X = x, bit_GridOrList = 1)
+        
+                # ---------------------------------------------------------------------
+        #  A. STACK ALL GRID POINTS  ->  verts  (shape [N,3])
+        # ---------------------------------------------------------------------
+        verts = np.vstack(pts)                 # same order you feed to faces
+        # We'll need a lookup: original index of each point in verts
+        idx_lookup = {id(pt): i for i, pt in enumerate(map(tuple, verts))}
+
+        # ---------------------------------------------------------------------
+        #  B. COMPUTE (s,u)  IN  [0,1] × [0,1]
+        #     s: normalised x  (bow→stern)
+        #     u: normalised z  (keel→deck)
+        # ---------------------------------------------------------------------
+        x_min, x_max = verts[:,0].min(), verts[:,0].max()
+        z_min, z_max = verts[:,2].min(), verts[:,2].max()
+
+        s = (verts[:,0] - x_min) / (x_max - x_min)
+        u = (verts[:,2] - z_min) / (z_max - z_min)
+
+        uv = np.stack([s, u], axis=1)          # (N,2) array
+
+        
+        def _is_on_segment(pt, a, b, eps=1e-9):
+            # check if pt lies on the line segment [a,b]
+            # via cross-product ≈0 and dot-product ≤0
+            cross = (b[0]-a[0])*(pt[1]-a[1]) - (b[1]-a[1])*(pt[0]-a[0])
+            if abs(cross) > eps:
+                return False
+            dot = (pt[0]-a[0])*(pt[0]-b[0]) + (pt[1]-a[1])*(pt[1]-b[1])
+            return dot <= eps
+
+        def _point_in_poly_inclusive(pt, poly):
+            """
+            Ray‐cast test: returns True if pt is strictly inside poly 
+            or lies exactly on any edge.
+            """
+            x, y = pt
+            inside = False
+            n = len(poly)
+            for i in range(n):
+                x0, y0 = poly[i]
+                x1, y1 = poly[(i+1) % n]
+
+                # 1) on-edge check
+                if _is_on_segment(pt, (x0,y0), (x1,y1)):
+                    return True
+
+                # 2) ray‐cast crossing test
+                intersects = ((y0 > y) != (y1 > y)) and \
+                            (x < (x1-x0)*(y-y0)/(y1-y0) + x0)
+                if intersects:
+                    inside = not inside
+
+            return inside
+        
+        # 2) test each waterline for convexity
+        if require_convex:
+            for i in range(1, NUM_WL):
+                outer = pts[i-1][:, :2]   # the “ring” above
+                inner = pts[i][:,   :2]   # the next ring down
+                for j, p in enumerate(inner):
+                    if _point_in_poly_inclusive(p, outer):
+                        print('invalid')
+                        return None
+                    
+        #start to assemble the triangles into vectors of indices from pts
+        TriVec = []
+        
+        for i in range(0,NUM_WL-1):
+            
+            #Find idx where the mesh grids begin to align between two rows returns a zero or 1:
+                
+            bow = np.argmax([pts[i][0,0],pts[i+1][0,0]])
+            
+            stern = np.argmin([pts[i][-1,0],pts[i+1][-1,0]])
+            
+           
+            # Find index where mesh grid lines up and ends between each WL
+            
+            if bow:
+                idx_WLB1 = 1
+                idx_WLB0 = np.where(pts[i][:,0] == pts[i+1][idx_WLB1,0])[0][0]
+            else:
+                idx_WLB0 = 1
+                idx_WLB1 = np.where(pts[i+1][:,0] == pts[i][idx_WLB0,0])[0][0]
+            
+            if stern:
+                idx_WLS1 = len(pts[i+1]) - 2
+                idx_WLS0 = np.where(pts[i][:,0] == pts[i+1][idx_WLS1,0])[0][0] 
+            else:
+                idx_WLS0 = len(pts[i]) - 2
+                idx_WLS1 = np.where(pts[i+1][:,0] == pts[i][idx_WLS0,0])[0][0]                
+            
+            #check that these two are the same size:
+            
+            #Build the bow triangles Includes Port assignments
+            
+            if bow:
+                TriVec.append([pts[i+1][idx_WLB1], pts[i][0], pts[i+1][0]])
+                
+                for j in range(0,idx_WLB0):
+                    TriVec.append([pts[i+1][idx_WLB1], pts[i][j+1], pts[i][j]])
+            
+            else: 
+                for j in range(0,idx_WLB1):
+                    TriVec.append([pts[i][0],pts[i+1][j], pts[i+1][j+1]])
+                    
+                TriVec.append([pts[i][0],pts[i+1][idx_WLB1], pts[i][idx_WLB0]])
+            
+            #Build main part of hull triangles. Port Assignments
+            for j in range(0, idx_WLS1-idx_WLB1):
+                
+                TriVec.append([pts[i][idx_WLB0+j], pts[i+1][idx_WLB1+j], pts[i+1][idx_WLB1+j+1]])
+                TriVec.append([pts[i][idx_WLB0+j], pts[i+1][idx_WLB1+j+1], pts[i][idx_WLB0+j+1]]) 
+            
+            #Build the stern:
+            if stern:
+
+                for j in range(idx_WLS0,len(pts[i])-1):
+                    TriVec.append([pts[i+1][idx_WLS1],  pts[i][j+1],pts[i][j]])
+                
+                TriVec.append([pts[i+1][idx_WLS1], pts[i+1][-1], pts[i][-1]])
+            
+            else:
+                
+                TriVec.append([pts[i][idx_WLS0], pts[i+1][idx_WLS1], pts[i][-1]])
+                
+                for j in range(idx_WLS1, len(pts[i+1])-1):
+                    TriVec.append([pts[i][-1], pts[i+1][j], pts[i+1][j+1]])
+            
+        
+        TriVec = np.array(TriVec)
+       
+        hullTriangles = 2*len(TriVec)
+        numTriangles = hullTriangles
+        
+        
+        
+        #add triangles if there is a transom
+        if bit_AddTransom:
+            wl_above = len([i for i in z if i > self.SK[1]])
+        
+            z_idx = NUM_WL - wl_above - 1
+            
+            transomTriangles = 2*wl_above - 1
+            
+            numTriangles += transomTriangles
+            
+        #Add triangles if there is a deck lid (meaning the ship becomes a closed body)
+        if bit_AddDeckLid:
+            numTriangles += 2*len(pts[-1]) - 3
+    
+
+        HULL = mesh.Mesh(np.zeros(numTriangles, dtype=mesh.Mesh.dtype))
+    
+        HULL.vectors[0:len(TriVec)] = np.copy(TriVec)
+        
+        TriVec_stbd = np.copy(TriVec[:,::-1])
+        TriVec_stbd[:,:,1] *= -1
+        HULL.vectors[len(TriVec):hullTriangles] = np.copy(TriVec_stbd)
+    
+        # NowBuild the transom:
+        if bit_AddTransom:
+            
+            pts_trans = np.zeros((wl_above+1,3))
+            
+            for i in range(0,len(pts_trans)):                       
+                pts_trans[i] = pts[z_idx+i][-1,:]
+                
+           
+            pts_tranp = np.array(pts_trans)
+            
+            pts_tranp[:,1] *= -1.0
+            
+            
+            
+            
+            HULL.vectors[hullTriangles] = np.array([pts_trans[0], pts_trans[1], pts_tranp[1]])
+                        
+            for i in range(1,wl_above):
+                HULL.vectors[hullTriangles + 2*i-1] = np.array([pts_trans[i], pts_trans[i+1], pts_tranp[i]])
+                HULL.vectors[hullTriangles + 2*i] =     np.array([pts_tranp[i], pts_trans[i+1], pts_tranp[i+1]])
+                
+        
+        # Add the deck lid
+        if bit_AddDeckLid:
+            
+            #pts_Lids are starboard points on the deck
+            #pts_Lidp are port points on the deck
+           
+            pts_Lids = pts[NUM_WL-1]
+            
+            pts_Lidp = np.array(pts_Lids)
+            pts_Lidp[:,1] *= -1.0
+            
+            startTriangles = hullTriangles + transomTriangles
+            
+            # Points are orered so the right hand rule points the lid in positive z
+            HULL.vectors[startTriangles] = np.array([pts_Lids[0], pts_Lidp[1], pts_Lids[1]])
+            
+            for i in range(1,len(pts_Lids)-1):              
+                HULL.vectors[startTriangles + 2*i - 1] = np.array([pts_Lids[i], pts_Lidp[i], pts_Lids[i+1]])
+                HULL.vectors[startTriangles + 2*i] =     np.array([pts_Lids[i+1], pts_Lidp[i],  pts_Lidp[i+1]])
+            
+        print('Number of Triangles: ', numTriangles)
+            
+        HULL.save(namepath + '.stl')
+        
+        # --- bijectivity sanity check (O(N log N))
+        _, idx, counts = np.unique(np.round(uv*1e6).view([('s',np.int64),
+                                                        ('u',np.int64)]),
+                                return_index=True,
+                                return_counts=True)
+        if (counts>1).any():
+            dup = verts[idx[counts>1][0]]
+            raise RuntimeError(f"UV fold detected near vertex {dup}")
+
+        # --- write USDZ file ------------------------------------------
+        from pxr import Usd, UsdGeom, Sdf, Gf
+        
+        TriIdx = []   # will hold int indices
+
+        # Example replacement for one push:
+        TriIdx.append([idx_lookup[id(tuple(pts[i+1][idx_WLB1]))],
+                    idx_lookup[id(tuple(pts[i][0]))],
+                    idx_lookup[id(tuple(pts[i+1][0]))]])
+
+
+        stage = Usd.Stage.CreateNew(namepath + '.usd')
+        prim  = UsdGeom.Mesh.Define(stage, "/Hull")
+
+        prim.CreatePointsAttr([Gf.Vec3f(*p) for p in verts])
+        prim.CreateFaceVertexCountsAttr([3]*len(TriIdx))
+        prim.CreateFaceVertexIndicesAttr(np.array(TriIdx).reshape(-1).tolist())
+
+        # face-varying UVs
+        st = prim.CreatePrimvar("st",
+                                Sdf.ValueTypeNames.TexCoord2fArray,
+                                UsdGeom.Tokens.faceVarying)
+        st.Set([Gf.Vec2f(*uv[i]) for i in np.array(TriIdx).reshape(-1)])
+
+        stage.Save()
+
+                
+        return HULL
+    
+    
     
     def gen_PC_for_Cw(self, draft, NUM_WL = 51, PointsPerWL = 301):
         '''
