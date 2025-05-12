@@ -98,7 +98,7 @@ class HullViewer(QtWidgets.QMainWindow):
 
         # Initial actor and render
         self.mesh_actor = None
-        self.show_next(valid_only=True)
+        self.show_next(valid_only=False)
 
     def _make_updater(self, idx, widget):
         def callback():

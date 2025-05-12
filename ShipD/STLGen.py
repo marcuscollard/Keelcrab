@@ -13,7 +13,6 @@ import numpy as np
 
 import csv
 
-from tqdm import tqdm
 
 
 #Open the Design Vector csv
@@ -35,7 +34,7 @@ for j in range(1,4):
     
 
     #loop thru to make point cloud files
-    for i in tqdm(range(0,len(DesVec)):
+    for i in range(0,len(DesVec)):
     
     
         hull = HP(DesVec[i])
