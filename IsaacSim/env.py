@@ -1,29 +1,17 @@
 
-
-# launch the scene
-
-
-import argparse
-
-from isaaclab.app import AppLauncher
-
-# create argparser
-parser = argparse.ArgumentParser(description="Tutorial on creating an empty stage.")
-parser.add_argument("--num_envs", type=int, default=2, help="number envs to spawn")
-
-AppLauncher.add_app_launcher_args(parser)
-args_cli = parser.parse_args()
-
-# launch omniverse app
-app_launcher = AppLauncher(args_cli)
-simulation_app = app_launcher.app
-
-
 # Generic Imports
+import argparse
+from isaaclab.app import AppLauncher
 import random
 import omni.usd
 from pxr import Gf, Sdf, UsdGeom, UsdShade
 import numpy as np
+import sys
+import os
+
+# for ship
+import tempfile
+from Keelcrab/ShipD/HullParameterization.py import Hull_Parameterization as HP
 
 # for Isaac Sim
 from source.isaaclab.isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
@@ -50,6 +38,17 @@ from isaaclab.sim import SimulationContext
 from isaaclab.utils import Timer, configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
+
+# create argparser
+parser = argparse.ArgumentParser(description="Tutorial on creating an empty stage.")
+parser.add_argument("--num_envs", type=int, default=2, help="number envs to spawn")
+
+AppLauncher.add_app_launcher_args(parser)
+args_cli = parser.parse_args()
+
+# launch omniverse app
+app_launcher = AppLauncher(args_cli)
+simulation_app = app_launcher.app
 
 # from isaaclab.sim import SimulationCfg, SimulationContext
 
@@ -97,6 +96,32 @@ def create_texture(prim_path_expr: str):
         .Set(f"dynamic://{dyn_tex_name}")  # Link to our DynamicTextureProvider:contentReference[oaicite:2]{index=2}
 
     prim_paths = sim_utils.find_matching_prim_paths(prim_path_expr)
+    
+    def get_hull_USD(self):
+        hull = HP(self.params)
+        base = os.path.join(tempfile.gettempdir(), 'hull_view')
+        hull.gen_USD(
+            NUM_WL=50,
+            PointsPerWL=150,
+            bit_AddTransom=1,
+            bit_AddDeckLid=1,
+            bit_RefineBowAndStern=1,
+            namepath=base
+        )
+        stl_file = base + '.stl'
+        if not os.path.isfile(stl_file):
+            print(f"STL generation failed: {stl_file} not found")
+            return
+        pv_mesh = pv.read(stl_file)
+        if self.mesh_actor is None:
+            self.mesh_actor = self.plotter.add_mesh(pv_mesh, show_edges=True)
+            self.plotter.reset_camera()
+        else:
+            self.mesh_actor.mapper.SetInputData(pv_mesh)
+        self.plotter.render()
+
+
+
     # manually clone prims if the source prim path is a regex expression
     with Sdf.ChangeBlock():
         for prim_path in prim_paths:
