@@ -3,24 +3,34 @@
 import argparse
 from isaaclab.app import AppLauncher
 import random
-import omni.usd
-from pxr import Gf, Sdf, UsdGeom, UsdShade
 import numpy as np
 import sys
 import os
 
 # for ship
 import tempfile
-from Keelcrab/ShipD/HullParameterization.py import Hull_Parameterization as HP
+from ShipD.HullParameterization import Hull_Parameterization as HP
 
 # for Isaac Sim
-from source.isaaclab.isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
+from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 
 # for DL
 import torch
 
 # for RL
 from isaaclab.envs import ManagerBasedRLEnv
+
+# create argparser
+parser = argparse.ArgumentParser(description="Tutorial on creating an empty stage.")
+parser.add_argument("--num_envs", type=int, default=2, help="number envs to spawn")
+
+AppLauncher.add_app_launcher_args(parser)
+args_cli = parser.parse_args()
+
+# launch omniverse app
+app_launcher = AppLauncher(args_cli)
+simulation_app = app_launcher.app
+
 
 # for Isaac Lab
 import isaaclab.sim as sim_utils
@@ -37,18 +47,8 @@ from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sim import SimulationContext
 from isaaclab.utils import Timer, configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
-
-
-# create argparser
-parser = argparse.ArgumentParser(description="Tutorial on creating an empty stage.")
-parser.add_argument("--num_envs", type=int, default=2, help="number envs to spawn")
-
-AppLauncher.add_app_launcher_args(parser)
-args_cli = parser.parse_args()
-
-# launch omniverse app
-app_launcher = AppLauncher(args_cli)
-simulation_app = app_launcher.app
+import omni.usd
+from pxr import Gf, Sdf, UsdGeom, UsdShade
 
 # from isaaclab.sim import SimulationCfg, SimulationContext
 

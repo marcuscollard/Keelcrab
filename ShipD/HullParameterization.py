@@ -55,7 +55,7 @@ from matplotlib import pyplot as plt
 
 from stl import mesh
 
-from scipy.spatial import ConvexHull
+# from scipy.spatial import ConvexHull
 
 
 
