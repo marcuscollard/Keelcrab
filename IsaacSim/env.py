@@ -11,14 +11,8 @@ import os
 import tempfile
 from ShipD.HullParameterization import Hull_Parameterization as HP
 
-# for Isaac Sim
-from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
-
 # for DL
 import torch
-
-# for RL
-from isaaclab.envs import ManagerBasedRLEnv
 
 # create argparser
 parser = argparse.ArgumentParser(description="Tutorial on creating an empty stage.")
@@ -31,6 +25,12 @@ args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+
+# for Isaac Sim
+from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
+
+# for RL
+from isaaclab.envs import ManagerBasedRLEnv
 
 # for Isaac Lab
 import isaaclab.sim as sim_utils
