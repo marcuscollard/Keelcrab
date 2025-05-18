@@ -1,0 +1,5 @@
+ships:
+  dataset_index: 1
+  filepath: ~/ship_assets/dataset_${ships.data_index}.csv
+random:
+  seed: 42

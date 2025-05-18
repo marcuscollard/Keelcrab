@@ -2194,7 +2194,6 @@ class Hull_Parameterization:
             
             
             
-            
             HULL.vectors[hullTriangles] = np.array([pts_trans[0], pts_trans[1], pts_tranp[1]])
                         
             for i in range(1,wl_above):
@@ -2226,43 +2225,153 @@ class Hull_Parameterization:
             
         HULL.save(namepath + '.stl')
         
-        # --- bijectivity sanity check (O(N log N))
-        _, idx, counts = np.unique(np.round(uv*1e6).view([('s',np.int64),
-                                                        ('u',np.int64)]),
-                                return_index=True,
-                                return_counts=True)
-        if (counts>1).any():
-            dup = verts[idx[counts>1][0]]
-            raise RuntimeError(f"UV fold detected near vertex {dup}")
+        # ---------------------------------------------------------------------------
+        #  A)  COLLECT *ALL* TRIANGLES THAT FINISHED IN HULL.vectors
+        #      and remember where each region begins
+        # ---------------------------------------------------------------------------
+        all_tris = np.copy(HULL.vectors)                 # (F,3,3)
 
-        # --- write USDZ file ------------------------------------------
-        from pxr import Usd, UsdGeom, Sdf, Gf
-        
-        TriIdx = []   # will hold int indices
+        F_hull      = hullTriangles                      # 0 … F_hull-1      (main shell)
+        F_transom   = transomTriangles                   # F_hull … F_hull+F_transom-1
+        F_deck      = numTriangles - F_hull - F_transom  # rest              (lid)
 
-        # Example replacement for one push:
-        TriIdx.append([idx_lookup[id(tuple(pts[i+1][idx_WLB1]))],
-                    idx_lookup[id(tuple(pts[i][0]))],
-                    idx_lookup[id(tuple(pts[i+1][0]))]])
+        # ---------------------------------------------------------------------------
+        #  B)  UNIQUE-VERTEX TABLE  +  FACE-VERTEX INDICES
+        # ---------------------------------------------------------------------------
+        coord2idx, verts_unique, TriIdx = {}, [], []
+        for tri in all_tris.reshape(-1, 3):
+            key = tuple(np.round(tri, 8))                # avoid FP noise
+            if key not in coord2idx:
+                coord2idx[key] = len(verts_unique)
+                verts_unique.append(key)
+            # build indices per corner
+        for tri in all_tris:
+            TriIdx.append([coord2idx[tuple(np.round(v, 8))] for v in tri])
+        TriIdx = np.asarray(TriIdx, dtype=np.int32)       # (F,3)
+        verts_unique = np.asarray(verts_unique, dtype=np.float32)
 
+        # ---------------------------------------------------------------------------
+        #  C)  UV SET 0  (st)  —  “oval” mapping for the main shell
+        # ---------------------------------------------------------------------------
+        x0, x1 = verts_unique[:, 0].min(), verts_unique[:, 0].max()
+        Bhalf  = np.abs(verts_unique[:, 1]).max()
+        D      = np.abs(verts_unique[:, 2]).max()
 
-        stage = Usd.Stage.CreateNew(namepath + '.usd')
-        prim  = UsdGeom.Mesh.Define(stage, "/Hull")
+        U0 = (verts_unique[:, 0] - x0) / (x1 - x0)
+        r  = np.sqrt((verts_unique[:, 1] / Bhalf) ** 2 + (verts_unique[:, 2] / D) ** 2)
+        V0 = 0.5 + 0.5 * np.sign(verts_unique[:, 1]) * r
+        st0 = np.stack([U0, V0], axis=1).astype(np.float32)        # (N,2)
 
-        prim.CreatePointsAttr([Gf.Vec3f(*p) for p in verts])
-        prim.CreateFaceVertexCountsAttr([3]*len(TriIdx))
-        prim.CreateFaceVertexIndicesAttr(np.array(TriIdx).reshape(-1).tolist())
+        # ---------------------------------------------------------------------------
+        #  D)  UV SET 1  (st1)  —  simple planar map for the deck lid
+        # ---------------------------------------------------------------------------
+        # put entire deck into 0-1×0-1 rectangle; others get dummy (-1)
+        st1 = np.full_like(st0, -1.0)
+        deck_verts = np.unique(TriIdx[F_hull + F_transom:])        # vertex id’s used by lid
+        x_min, x_max = verts_unique[deck_verts, 0].min(), verts_unique[deck_verts, 0].max()
+        y_min, y_max = verts_unique[deck_verts, 1].min(), verts_unique[deck_verts, 1].max()
+        st1[deck_verts, 0] = (verts_unique[deck_verts, 0] - x_min) / (x_max - x_min)
+        st1[deck_verts, 1] = (verts_unique[deck_verts, 1] - y_min) / (y_max - y_min)
 
-        # face-varying UVs
-        st = prim.CreatePrimvar("st",
-                                Sdf.ValueTypeNames.TexCoord2fArray,
-                                UsdGeom.Tokens.faceVarying)
-        st.Set([Gf.Vec2f(*uv[i]) for i in np.array(TriIdx).reshape(-1)])
+        # ---------------------------------------------------------------------------
+        #  E)  UV SET 2  (st2)  —  planar map for the transom
+        # ---------------------------------------------------------------------------
+        st2 = np.full_like(st0, -1.0)
+        transom_v = np.unique(TriIdx[F_hull:F_hull + F_transom])
+        y_min, y_max = verts_unique[transom_v, 1].min(), verts_unique[transom_v, 1].max()
+        z_min, z_max = verts_unique[transom_v, 2].min(), verts_unique[transom_v, 2].max()
+        st2[transom_v, 0] = (verts_unique[transom_v, 1] - y_min) / (y_max - y_min)
+        st2[transom_v, 1] = (verts_unique[transom_v, 2] - z_min) / (z_max - z_min)
+
+        # ---------------------------------------------------------------------------
+        #  F)  WRITE USD PRIM
+        # ---------------------------------------------------------------------------
+        from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf
+
+        stage = Usd.Stage.CreateNew(namepath + ".usd")
+        sim_mesh  = UsdGeom.Mesh.Define(stage, "/Hull")
+
+        # before you feed the coordinates to USD …
+        verts_unique = verts_unique.astype(np.float64)      # or np.float32, but not dtype=object
+
+        sim_mesh.CreatePointsAttr(
+            [Gf.Vec3f(float(x), float(y), float(z)) for x, y, z in verts_unique]
+        )
+        sim_mesh.CreateFaceVertexCountsAttr([3] * len(TriIdx))
+        sim_mesh.CreateFaceVertexIndicesAttr(TriIdx.reshape(-1).tolist())
+        sim_mesh.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
+        sim_mesh.CreateDoubleSidedAttr(True)
+
+        pvars = UsdGeom.PrimvarsAPI(sim_mesh)
+
+        for name, data in zip(("st", "st1", "st2"), (st0, st1, st2)):
+            pv = pvars.CreatePrimvar(
+                    name,
+                    Sdf.ValueTypeNames.TexCoord2fArray,
+                    UsdGeom.Tokens.faceVarying,
+            )
+            pv.Set([Gf.Vec2f(float(u), float(v)) for u, v in data[TriIdx.reshape(-1)]])
+
+        # ---------------------------------------------------------------------------
+        #  G)  FACE SUBSETS  (indices are *triangle* order)
+        # ---------------------------------------------------------------------------
+        sub_hull = UsdGeom.Subset.Define(stage, "/Hull/HullFaces")
+        sub_hull.CreateElementTypeAttr("face")
+        sub_hull.CreateIndicesAttr(list(range(0, F_hull)))
+
+        sub_tran = UsdGeom.Subset.Define(stage, "/Hull/TransomFaces")
+        sub_tran.CreateElementTypeAttr("face")
+        sub_tran.CreateIndicesAttr(list(range(F_hull, F_hull + F_transom)))
+
+        sub_deck = UsdGeom.Subset.Define(stage, "/Hull/DeckFaces")
+        sub_deck.CreateElementTypeAttr("face")
+        sub_deck.CreateIndicesAttr(list(range(F_hull + F_transom, len(TriIdx))))
+
+        # ---------------------------------------------------------------------------
+        #  H)  THREE CHECKER MATERIALS  (different UV set & scale)
+        # ---------------------------------------------------------------------------
+
+        def make_checker(mat_path: str, uv_set_index: int, scale: float):
+            # ── material prim ─────────────────────────────────────────────────────
+            mtl = UsdShade.Material.Define(stage, mat_path)
+
+            # ── MDL checker shader ────────────────────────────────────────────────
+            chk = UsdShade.Shader.Define(stage, mat_path + "/Checker")
+            chk.CreateIdAttr("core_definitions::checkerboard")
+            chk.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(scale, scale))
+            chk.CreateInput("texture_coordinate_index", Sdf.ValueTypeNames.Int).Set(uv_set_index)
+            chk_out = chk.CreateOutput("out", Sdf.ValueTypeNames.Float3)     # colour output
+
+            # ── Preview-surface wrapper ───────────────────────────────────────────
+            pbs = UsdShade.Shader.Define(stage, mat_path + "/PreviewSurface")
+            pbs.CreateIdAttr("UsdPreviewSurface")
+
+            diff_col = pbs.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+            diff_col.ConnectToSource(chk_out)                                 # <-- fixed
+
+            pbs_out = pbs.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+
+            # ── hook the surface into the material ───────────────────────────────
+            mtl.CreateSurfaceOutput().ConnectToSource(pbs_out)
+            return mtl
+
+        make_checker("/Looks/HullChecker",    0, 0.10)   # medium checks
+        make_checker("/Looks/DeckChecker",    1, 0.25)   # smaller checks
+        make_checker("/Looks/TransomChecker", 2, 0.05)   # large checks
+
+        # ---------------------------------------------------------------------------
+        #  I)  BIND MATERIALS TO SUBSETS
+        # ---------------------------------------------------------------------------
+        UsdShade.MaterialBindingAPI(sub_hull).Bind(UsdShade.Material.Get(stage, "/Looks/HullChecker"))
+        UsdShade.MaterialBindingAPI(sub_deck).Bind(UsdShade.Material.Get(stage, "/Looks/DeckChecker"))
+        UsdShade.MaterialBindingAPI(sub_tran).Bind(UsdShade.Material.Get(stage, "/Looks/TransomChecker"))
 
         stage.Save()
+        print(f"✅  wrote {len(verts_unique)} verts / {len(TriIdx)} tris + 3 UV sets → {namepath}.usd")
 
-                
-        return HULL
+        return HULL                       # STL already saved earlier
+
+
     
     
     
