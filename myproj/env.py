@@ -101,7 +101,7 @@ def create_hulls(cfg: DictConfig):
     vecs = list(vectors[chosen_indices])
     for i, vec in enumerate(vecs):
         hull = HP(vec)
-        base = os.path.join("~/temp", f'hull_{i}')
+        base = os.path.join("myproj/temp/", f'hull_{i}')
         hull.gen_USD(
             NUM_WL=50,
             PointsPerWL=200,
@@ -259,17 +259,17 @@ def create_texture(prim_path_expr: str):
             ground_prim.ApplyAPI(UsdShade.MaterialBindingAPI)           # ensure binding API is present
             UsdShade.MaterialBindingAPI(ground_prim).Bind(material)
 
+# 1) collect every USD in your folder (runs once, at import time)
+# load the parameters csv
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+usd_path = os.path.join(SCRIPT_DIR, "temp/*.usd")
+HULL_BANK = glob.glob(usd_path)
+assert HULL_BANK, "No hull USDs found – check the folder path"
+
 
 
 @configclass
 class SceneCfgOverride(InteractiveSceneCfg):
-
-    # 1) collect every USD in your folder (runs once, at import time)
-    # load the parameters csv
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    usd_path = os.path.join(SCRIPT_DIR, "temp/*.usd")
-    HULL_BANK = glob.glob(usd_path)
-    assert HULL_BANK, "No hull USDs found – check the folder path"
 
     # ground plane
     ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
@@ -279,25 +279,18 @@ class SceneCfgOverride(InteractiveSceneCfg):
 
     # articulation??
 
-    hull: AssetBaseCfg = AssetBaseCfg(
-        prim_path="/World/envs/env_.*/hull",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.0, 0.0, 0.0], rot=[0.0, 0.0, 0.0, 0.0]),
-        spawn=UsdFileCfg(usd_path="/home/ubuntu/Desktop/oc-2.usd"),
-    )
-
     # ----------------------------------------
     # hulls – one per parallel environment
     # ----------------------------------------
     hull = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/hull",
+        prim_path="/World/envs/env_.*/hull",
         spawn=sim_spawners.MultiUsdFileCfg(
             usd_path=HULL_BANK,          # <- *list* or wildcard
             random_choice=True,          # <- pick a new one each reset
             rigid_props=sim_schemas.RigidBodyPropertiesCfg(
                 kinematic_enabled=True,  # <- immovable but still a RigidBody
             ),
-            collision_props=sim_schemas.CollisionPropertiesCfg(),
-            activate_contact_sensors=True,
+            collision_props=sim_schemas.CollisionPropertiesCfg()
         ),
         init_state=AssetBaseCfg.InitialStateCfg(
             pos=[0.0, 0.0, 0.0],
@@ -357,9 +350,9 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     # Extract scene entities
     # note: we only do this here for readability.
 
-    my_scene = scene['my_scene']
+    hull = scene['hull']
 
-    rigid = my_scene.rigid_objects['Object']
+    #rigid = hull.rigid_objects['hull']
     
     sim_dt = sim.get_physics_dt()
 
@@ -412,8 +405,6 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene):
 
 
 
-
-
 #         my_asset: AssetBaseCfg = AssetBaseCfg(
 #         prim_path="/World/scene/my_asset",
 #         init_state=AssetBaseCfg.InitialStateCfg(pos=[0.0, 0.0, 0.0], rot=[1.0, 0.0, 0.0, 0.0]),
@@ -433,6 +424,8 @@ def _setup_scene(self):
 def main(cfg: DictConfig):
     """Main function."""
 
+    global HULL_BANK
+
     # Initialize the simulation context
     sim_cfg = sim_utils.SimulationCfg(dt=0.01)
     sim = SimulationContext(sim_cfg)
@@ -443,8 +436,15 @@ def main(cfg: DictConfig):
         # DO YOUR OWN OTHER KIND OF RANDOMIZATION HERE!
         # Note: Just need to acquire the right attribute about the property you want to set
         # Here is an example on setting color randomly
-        # create_hulls(cfg)
+        #create_hulls(cfg)
         pass
+
+        from pxr import Usd
+        s = Usd.Stage.Open("/home/ubuntu/IsaacLab/Keelcrab/myproj/temp/hull_2.usd")
+        print(s.GetDefaultPrim())        # should print </Hull>
+        root_layer = s.GetRootLayer()
+        print("layer's defaultPrim token →", root_layer.defaultPrim)  # "Hull"
+
 
     scene_cfg = SceneCfgOverride(num_envs=args_cli.num_envs, env_spacing=4.0, replicate_physics=False)
     with Timer("[INFO] Time to create scene: "):
@@ -454,7 +454,8 @@ def main(cfg: DictConfig):
         # DO YOUR OWN OTHER KIND OF RANDOMIZATION HERE!
         # Note: Just need to acquire the right attribute about the property you want to set
         # Here is an example on setting color randomly
-        inject_USDs(cfg, scene_cfg.my_scene.prim_path)
+        pass
+        #inject_USDs(cfg, scene_cfg.my_scene.prim_path)
 
     # Play the simulator
     sim.reset()

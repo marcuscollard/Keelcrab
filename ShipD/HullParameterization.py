@@ -2223,7 +2223,7 @@ class Hull_Parameterization:
             
         print('Number of Triangles: ', numTriangles)
             
-        HULL.save(namepath + '.stl')
+        # HULL.save(namepath + '.stl')
         
         # ---------------------------------------------------------------------------
         #  A)  COLLECT *ALL* TRIANGLES THAT FINISHED IN HULL.vectors
@@ -2286,10 +2286,11 @@ class Hull_Parameterization:
         # ---------------------------------------------------------------------------
         #  F)  WRITE USD PRIM
         # ---------------------------------------------------------------------------
-        from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf
+        from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf, Tf
 
         stage = Usd.Stage.CreateNew(namepath + ".usd")
-        sim_mesh  = UsdGeom.Mesh.Define(stage, "/Hull")
+        hull_xform = UsdGeom.Xform.Define(stage, "/Hull")
+        sim_mesh  = UsdGeom.Mesh.Define(stage, "/Hull/Geom")
 
         # before you feed the coordinates to USD …
         verts_unique = verts_unique.astype(np.float64)      # or np.float32, but not dtype=object
@@ -2315,17 +2316,39 @@ class Hull_Parameterization:
         # ---------------------------------------------------------------------------
         #  G)  FACE SUBSETS  (indices are *triangle* order)
         # ---------------------------------------------------------------------------
-        sub_hull = UsdGeom.Subset.Define(stage, "/Hull/HullFaces")
+        sub_hull = UsdGeom.Subset.Define(stage, "/Hull/Geom/HullFaces")
         sub_hull.CreateElementTypeAttr("face")
         sub_hull.CreateIndicesAttr(list(range(0, F_hull)))
 
-        sub_tran = UsdGeom.Subset.Define(stage, "/Hull/TransomFaces")
+        sub_tran = UsdGeom.Subset.Define(stage, "/Hull/Geom/TransomFaces")
         sub_tran.CreateElementTypeAttr("face")
         sub_tran.CreateIndicesAttr(list(range(F_hull, F_hull + F_transom)))
 
-        sub_deck = UsdGeom.Subset.Define(stage, "/Hull/DeckFaces")
+        sub_deck = UsdGeom.Subset.Define(stage, "/Hull/Geom/DeckFaces")
         sub_deck.CreateElementTypeAttr("face")
         sub_deck.CreateIndicesAttr(list(range(F_hull + F_transom, len(TriIdx))))
+
+        def tag_material_subset(subset):
+            prim = subset.GetPrim()
+
+            # familyName   (token)  -> "materialBind"
+            prim.CreateAttribute(
+                "familyName",
+                Sdf.ValueTypeNames.Token,
+                custom=False
+            ).Set("materialBind")
+
+            # familyType   (token)  -> "partition"
+            prim.CreateAttribute(
+                "familyType",
+                Sdf.ValueTypeNames.Token,
+                custom=False
+            ).Set("partition")
+
+        for subset in (sub_hull, sub_tran, sub_deck):
+            if subset:
+                tag_material_subset(subset)
+                tag_material_subset(subset)
 
         # ---------------------------------------------------------------------------
         #  H)  THREE CHECKER MATERIALS  (different UV set & scale)
@@ -2355,16 +2378,40 @@ class Hull_Parameterization:
             mtl.CreateSurfaceOutput().ConnectToSource(pbs_out)
             return mtl
 
-        make_checker("/Looks/HullChecker",    0, 0.10)   # medium checks
-        make_checker("/Looks/DeckChecker",    1, 0.25)   # smaller checks
-        make_checker("/Looks/TransomChecker", 2, 0.05)   # large checks
+        make_checker("/Hull/Looks/HullChecker",    0, 0.10)   # medium checks
+        make_checker("/Hull/Looks/DeckChecker",    1, 0.25)   # smaller checks
+        make_checker("/Hull/Looks/TransomChecker", 2, 0.05)   # large checks
 
         # ---------------------------------------------------------------------------
         #  I)  BIND MATERIALS TO SUBSETS
         # ---------------------------------------------------------------------------
-        UsdShade.MaterialBindingAPI(sub_hull).Bind(UsdShade.Material.Get(stage, "/Looks/HullChecker"))
-        UsdShade.MaterialBindingAPI(sub_deck).Bind(UsdShade.Material.Get(stage, "/Looks/DeckChecker"))
-        UsdShade.MaterialBindingAPI(sub_tran).Bind(UsdShade.Material.Get(stage, "/Looks/TransomChecker"))
+        UsdShade.MaterialBindingAPI(sub_hull).Bind(UsdShade.Material.Get(stage, "/Hull/Looks/HullChecker"))
+        UsdShade.MaterialBindingAPI(sub_deck).Bind(UsdShade.Material.Get(stage, "/Hull/Looks/DeckChecker"))
+        UsdShade.MaterialBindingAPI(sub_tran).Bind(UsdShade.Material.Get(stage, "/Hull/Looks/TransomChecker"))
+
+        from pxr import UsdPhysics, PhysxSchema
+
+        root_prim = hull_xform.GetPrim()
+        sim_mesh_prim = sim_mesh.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(sim_mesh_prim)
+        UsdPhysics.RigidBodyAPI.Apply(sim_mesh_prim)
+        PhysxSchema.PhysxRigidBodyAPI.Apply(sim_mesh_prim)
+
+        # ------------------------------------------------------------
+        #  set defaultPrim *inside* a ChangeBlock on the **root layer**
+        # ------------------------------------------------------------
+        with Sdf.ChangeBlock():
+            stage.SetEditTarget(stage.GetRootLayer())          # ensure root
+            stage.SetDefaultPrim(root_prim)                    # token = "Hull"
+
+        stage.GetRootLayer().Save()    # <-- explicit save never hurts
+        print("Saved", namepath + ".usd")
+
+        # sanity-check **immediately** after saving
+        test = Usd.Stage.Open(namepath + ".usd")
+        print("defaultPrim is:", test.GetDefaultPrim().GetPath())
+
+        print(f"✅  wrote defaultPrim + physics to {namepath}.usd")
 
         stage.Save()
         print(f"✅  wrote {len(verts_unique)} verts / {len(TriIdx)} tris + 3 UV sets → {namepath}.usd")
