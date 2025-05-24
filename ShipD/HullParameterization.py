@@ -55,7 +55,7 @@ from matplotlib import pyplot as plt
 
 from stl import mesh
 
-from scipy.spatial import ConvexHull
+# from scipy.spatial import ConvexHull
 
 
 
@@ -501,7 +501,7 @@ class Hull_Parameterization:
         BOOL_PTS_OR_SPACE controls whether a set number of points will produce the waterline (1) or the spacing vector will(0)
         
         '''
-       
+        
         x1 = self.bow_profile(z)
         
         x2 = self.delta_bow(z)
@@ -1983,9 +1983,444 @@ class Hull_Parameterization:
         print('Number of Triangles: ', numTriangles)
             
         HULL.save(namepath + '.stl')
+                
         return HULL
     
  
+    def gen_USD(self, NUM_WL = 50, PointsPerWL = 300, bit_AddTransom = 1, bit_AddDeckLid = 0, bit_RefineBowAndStern = 0, namepath = 'Hull_Mesh', require_convex=False):
+        # This function generates a surface of the mesh by iterating through the points on the waterlines
+        
+        #compute number of triangles in the mesh
+        #hullTriangles = 2 * (2*PointsPerWL - 2) * (NUM_WL - 1)
+        #numTriangles = hullTriangles
+        transomTriangles = 0
+
+        #Generate WL
+        z = np.zeros((NUM_WL,))
+        
+        z[0] = 0.0001*self.Dd
+        z[1] = 0.001*self.Dd
+        z[2:] = np.linspace(0.0, self.Dd, NUM_WL - 2)
+        
+        z = np.sort(z)
+
+        x = np.linspace(-self.LOA*0.5,1.5*self.LOA, 2*PointsPerWL - 1)
+
+        if bit_RefineBowAndStern:
+            # Add more points to X in the bow and stern
+            
+            x_sub1 = x[0:int(0.75*PointsPerWL)] + 0.5*(x[1] - x[0])
+            x_sub2 = x[-int(0.75*PointsPerWL):] + 0.5*(x[1] - x[0])
+            x = np.concatenate((x_sub1, x_sub2, x))
+            x = np.sort(x)
+
+        
+    
+        #Generate MeshGrid PC
+        pts = self.gen_MeshGridPointCloud(NUM_WL = NUM_WL, PointsPerLOA = PointsPerWL, Z = z, X = x, bit_GridOrList = 1)
+        
+                # ---------------------------------------------------------------------
+        #  A. STACK ALL GRID POINTS  ->  verts  (shape [N,3])
+        # ---------------------------------------------------------------------
+        verts = np.vstack(pts)                 # same order you feed to faces
+        # We'll need a lookup: original index of each point in verts
+        idx_lookup = {id(pt): i for i, pt in enumerate(map(tuple, verts))}
+
+        # ---------------------------------------------------------------------
+        #  B. COMPUTE (s,u)  IN  [0,1] × [0,1]
+        #     s: normalised x  (bow→stern)
+        #     u: normalised z  (keel→deck)
+        # ---------------------------------------------------------------------
+        x_min, x_max = verts[:,0].min(), verts[:,0].max()
+        z_min, z_max = verts[:,2].min(), verts[:,2].max()
+
+        s = (verts[:,0] - x_min) / (x_max - x_min)
+        u = (verts[:,2] - z_min) / (z_max - z_min)
+
+        uv = np.stack([s, u], axis=1)          # (N,2) array
+
+        
+        def _is_on_segment(pt, a, b, eps=1e-9):
+            # check if pt lies on the line segment [a,b]
+            # via cross-product ≈0 and dot-product ≤0
+            cross = (b[0]-a[0])*(pt[1]-a[1]) - (b[1]-a[1])*(pt[0]-a[0])
+            if abs(cross) > eps:
+                return False
+            dot = (pt[0]-a[0])*(pt[0]-b[0]) + (pt[1]-a[1])*(pt[1]-b[1])
+            return dot <= eps
+
+        def _point_in_poly_inclusive(pt, poly):
+            """
+            Ray‐cast test: returns True if pt is strictly inside poly 
+            or lies exactly on any edge.
+            """
+            x, y = pt
+            inside = False
+            n = len(poly)
+            for i in range(n):
+                x0, y0 = poly[i]
+                x1, y1 = poly[(i+1) % n]
+
+                # 1) on-edge check
+                if _is_on_segment(pt, (x0,y0), (x1,y1)):
+                    return True
+
+                # 2) ray‐cast crossing test
+                intersects = ((y0 > y) != (y1 > y)) and \
+                            (x < (x1-x0)*(y-y0)/(y1-y0) + x0)
+                if intersects:
+                    inside = not inside
+
+            return inside
+        
+        # 2) test each waterline for convexity
+        if require_convex:
+            for i in range(1, NUM_WL):
+                outer = pts[i-1][:, :2]   # the “ring” above
+                inner = pts[i][:,   :2]   # the next ring down
+                for j, p in enumerate(inner):
+                    if _point_in_poly_inclusive(p, outer):
+                        print('invalid')
+                        return None
+                    
+        #start to assemble the triangles into vectors of indices from pts
+        TriVec = []
+        
+        for i in range(0,NUM_WL-1):
+            
+            #Find idx where the mesh grids begin to align between two rows returns a zero or 1:
+                
+            bow = np.argmax([pts[i][0,0],pts[i+1][0,0]])
+            
+            stern = np.argmin([pts[i][-1,0],pts[i+1][-1,0]])
+            
+           
+            # Find index where mesh grid lines up and ends between each WL
+            
+            if bow:
+                idx_WLB1 = 1
+                idx_WLB0 = np.where(pts[i][:,0] == pts[i+1][idx_WLB1,0])[0][0]
+            else:
+                idx_WLB0 = 1
+                idx_WLB1 = np.where(pts[i+1][:,0] == pts[i][idx_WLB0,0])[0][0]
+            
+            if stern:
+                idx_WLS1 = len(pts[i+1]) - 2
+                idx_WLS0 = np.where(pts[i][:,0] == pts[i+1][idx_WLS1,0])[0][0] 
+            else:
+                idx_WLS0 = len(pts[i]) - 2
+                idx_WLS1 = np.where(pts[i+1][:,0] == pts[i][idx_WLS0,0])[0][0]                
+            
+            #check that these two are the same size:
+            
+            #Build the bow triangles Includes Port assignments
+            
+            if bow:
+                TriVec.append([pts[i+1][idx_WLB1], pts[i][0], pts[i+1][0]])
+                
+                for j in range(0,idx_WLB0):
+                    TriVec.append([pts[i+1][idx_WLB1], pts[i][j+1], pts[i][j]])
+            
+            else: 
+                for j in range(0,idx_WLB1):
+                    TriVec.append([pts[i][0],pts[i+1][j], pts[i+1][j+1]])
+                    
+                TriVec.append([pts[i][0],pts[i+1][idx_WLB1], pts[i][idx_WLB0]])
+            
+            #Build main part of hull triangles. Port Assignments
+            for j in range(0, idx_WLS1-idx_WLB1):
+                
+                TriVec.append([pts[i][idx_WLB0+j], pts[i+1][idx_WLB1+j], pts[i+1][idx_WLB1+j+1]])
+                TriVec.append([pts[i][idx_WLB0+j], pts[i+1][idx_WLB1+j+1], pts[i][idx_WLB0+j+1]]) 
+            
+            #Build the stern:
+            if stern:
+
+                for j in range(idx_WLS0,len(pts[i])-1):
+                    TriVec.append([pts[i+1][idx_WLS1],  pts[i][j+1],pts[i][j]])
+                
+                TriVec.append([pts[i+1][idx_WLS1], pts[i+1][-1], pts[i][-1]])
+            
+            else:
+                
+                TriVec.append([pts[i][idx_WLS0], pts[i+1][idx_WLS1], pts[i][-1]])
+                
+                for j in range(idx_WLS1, len(pts[i+1])-1):
+                    TriVec.append([pts[i][-1], pts[i+1][j], pts[i+1][j+1]])
+            
+        
+        TriVec = np.array(TriVec)
+       
+        hullTriangles = 2*len(TriVec)
+        numTriangles = hullTriangles
+        
+        
+        
+        #add triangles if there is a transom
+        if bit_AddTransom:
+            wl_above = len([i for i in z if i > self.SK[1]])
+        
+            z_idx = NUM_WL - wl_above - 1
+            
+            transomTriangles = 2*wl_above - 1
+            
+            numTriangles += transomTriangles
+            
+        #Add triangles if there is a deck lid (meaning the ship becomes a closed body)
+        if bit_AddDeckLid:
+            numTriangles += 2*len(pts[-1]) - 3
+    
+
+        HULL = mesh.Mesh(np.zeros(numTriangles, dtype=mesh.Mesh.dtype))
+    
+        HULL.vectors[0:len(TriVec)] = np.copy(TriVec)
+        
+        TriVec_stbd = np.copy(TriVec[:,::-1])
+        TriVec_stbd[:,:,1] *= -1
+        HULL.vectors[len(TriVec):hullTriangles] = np.copy(TriVec_stbd)
+    
+        # NowBuild the transom:
+        if bit_AddTransom:
+            
+            pts_trans = np.zeros((wl_above+1,3))
+            
+            for i in range(0,len(pts_trans)):                       
+                pts_trans[i] = pts[z_idx+i][-1,:]
+                
+           
+            pts_tranp = np.array(pts_trans)
+            
+            pts_tranp[:,1] *= -1.0
+            
+            
+            
+            HULL.vectors[hullTriangles] = np.array([pts_trans[0], pts_trans[1], pts_tranp[1]])
+                        
+            for i in range(1,wl_above):
+                HULL.vectors[hullTriangles + 2*i-1] = np.array([pts_trans[i], pts_trans[i+1], pts_tranp[i]])
+                HULL.vectors[hullTriangles + 2*i] =     np.array([pts_tranp[i], pts_trans[i+1], pts_tranp[i+1]])
+                
+        
+        # Add the deck lid
+        if bit_AddDeckLid:
+            
+            #pts_Lids are starboard points on the deck
+            #pts_Lidp are port points on the deck
+           
+            pts_Lids = pts[NUM_WL-1]
+            
+            pts_Lidp = np.array(pts_Lids)
+            pts_Lidp[:,1] *= -1.0
+            
+            startTriangles = hullTriangles + transomTriangles
+            
+            # Points are orered so the right hand rule points the lid in positive z
+            HULL.vectors[startTriangles] = np.array([pts_Lids[0], pts_Lidp[1], pts_Lids[1]])
+            
+            for i in range(1,len(pts_Lids)-1):              
+                HULL.vectors[startTriangles + 2*i - 1] = np.array([pts_Lids[i], pts_Lidp[i], pts_Lids[i+1]])
+                HULL.vectors[startTriangles + 2*i] =     np.array([pts_Lids[i+1], pts_Lidp[i],  pts_Lidp[i+1]])
+            
+        print('Number of Triangles: ', numTriangles)
+            
+        # HULL.save(namepath + '.stl')
+        
+        # ---------------------------------------------------------------------------
+        #  A)  COLLECT *ALL* TRIANGLES THAT FINISHED IN HULL.vectors
+        #      and remember where each region begins
+        # ---------------------------------------------------------------------------
+        all_tris = np.copy(HULL.vectors)                 # (F,3,3)
+
+        F_hull      = hullTriangles                      # 0 … F_hull-1      (main shell)
+        F_transom   = transomTriangles                   # F_hull … F_hull+F_transom-1
+        F_deck      = numTriangles - F_hull - F_transom  # rest              (lid)
+
+        # ---------------------------------------------------------------------------
+        #  B)  UNIQUE-VERTEX TABLE  +  FACE-VERTEX INDICES
+        # ---------------------------------------------------------------------------
+        coord2idx, verts_unique, TriIdx = {}, [], []
+        for tri in all_tris.reshape(-1, 3):
+            key = tuple(np.round(tri, 8))                # avoid FP noise
+            if key not in coord2idx:
+                coord2idx[key] = len(verts_unique)
+                verts_unique.append(key)
+            # build indices per corner
+        for tri in all_tris:
+            TriIdx.append([coord2idx[tuple(np.round(v, 8))] for v in tri])
+        TriIdx = np.asarray(TriIdx, dtype=np.int32)       # (F,3)
+        verts_unique = np.asarray(verts_unique, dtype=np.float32)
+
+        # ---------------------------------------------------------------------------
+        #  C)  UV SET 0  (st)  —  “oval” mapping for the main shell
+        # ---------------------------------------------------------------------------
+        x0, x1 = verts_unique[:, 0].min(), verts_unique[:, 0].max()
+        Bhalf  = np.abs(verts_unique[:, 1]).max()
+        D      = np.abs(verts_unique[:, 2]).max()
+
+        U0 = (verts_unique[:, 0] - x0) / (x1 - x0)
+        r  = np.sqrt((verts_unique[:, 1] / Bhalf) ** 2 + (verts_unique[:, 2] / D) ** 2)
+        V0 = 0.5 + 0.5 * np.sign(verts_unique[:, 1]) * r
+        st0 = np.stack([U0, V0], axis=1).astype(np.float32)        # (N,2)
+
+        # ---------------------------------------------------------------------------
+        #  D)  UV SET 1  (st1)  —  simple planar map for the deck lid
+        # ---------------------------------------------------------------------------
+        # put entire deck into 0-1×0-1 rectangle; others get dummy (-1)
+        st1 = np.full_like(st0, -1.0)
+        deck_verts = np.unique(TriIdx[F_hull + F_transom:])        # vertex id’s used by lid
+        x_min, x_max = verts_unique[deck_verts, 0].min(), verts_unique[deck_verts, 0].max()
+        y_min, y_max = verts_unique[deck_verts, 1].min(), verts_unique[deck_verts, 1].max()
+        st1[deck_verts, 0] = (verts_unique[deck_verts, 0] - x_min) / (x_max - x_min)
+        st1[deck_verts, 1] = (verts_unique[deck_verts, 1] - y_min) / (y_max - y_min)
+
+        # ---------------------------------------------------------------------------
+        #  E)  UV SET 2  (st2)  —  planar map for the transom
+        # ---------------------------------------------------------------------------
+        st2 = np.full_like(st0, -1.0)
+        transom_v = np.unique(TriIdx[F_hull:F_hull + F_transom])
+        y_min, y_max = verts_unique[transom_v, 1].min(), verts_unique[transom_v, 1].max()
+        z_min, z_max = verts_unique[transom_v, 2].min(), verts_unique[transom_v, 2].max()
+        st2[transom_v, 0] = (verts_unique[transom_v, 1] - y_min) / (y_max - y_min)
+        st2[transom_v, 1] = (verts_unique[transom_v, 2] - z_min) / (z_max - z_min)
+
+        # ---------------------------------------------------------------------------
+        #  F)  WRITE USD PRIM
+        # ---------------------------------------------------------------------------
+        from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf, Tf
+
+        stage = Usd.Stage.CreateNew(namepath + ".usd")
+        hull_xform = UsdGeom.Xform.Define(stage, "/Hull")
+        sim_mesh  = UsdGeom.Mesh.Define(stage, "/Hull/Geom")
+
+        # before you feed the coordinates to USD …
+        verts_unique = verts_unique.astype(np.float64)      # or np.float32, but not dtype=object
+
+        sim_mesh.CreatePointsAttr(
+            [Gf.Vec3f(float(x), float(y), float(z)) for x, y, z in verts_unique]
+        )
+        sim_mesh.CreateFaceVertexCountsAttr([3] * len(TriIdx))
+        sim_mesh.CreateFaceVertexIndicesAttr(TriIdx.reshape(-1).tolist())
+        sim_mesh.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
+        sim_mesh.CreateDoubleSidedAttr(True)
+
+        pvars = UsdGeom.PrimvarsAPI(sim_mesh)
+
+        for name, data in zip(("st", "st1", "st2"), (st0, st1, st2)):
+            pv = pvars.CreatePrimvar(
+                    name,
+                    Sdf.ValueTypeNames.TexCoord2fArray,
+                    UsdGeom.Tokens.faceVarying,
+            )
+            pv.Set([Gf.Vec2f(float(u), float(v)) for u, v in data[TriIdx.reshape(-1)]])
+
+        # ---------------------------------------------------------------------------
+        #  G)  FACE SUBSETS  (indices are *triangle* order)
+        # ---------------------------------------------------------------------------
+        sub_hull = UsdGeom.Subset.Define(stage, "/Hull/Geom/HullFaces")
+        sub_hull.CreateElementTypeAttr("face")
+        sub_hull.CreateIndicesAttr(list(range(0, F_hull)))
+
+        sub_tran = UsdGeom.Subset.Define(stage, "/Hull/Geom/TransomFaces")
+        sub_tran.CreateElementTypeAttr("face")
+        sub_tran.CreateIndicesAttr(list(range(F_hull, F_hull + F_transom)))
+
+        sub_deck = UsdGeom.Subset.Define(stage, "/Hull/Geom/DeckFaces")
+        sub_deck.CreateElementTypeAttr("face")
+        sub_deck.CreateIndicesAttr(list(range(F_hull + F_transom, len(TriIdx))))
+
+        def tag_material_subset(subset):
+            prim = subset.GetPrim()
+
+            # familyName   (token)  -> "materialBind"
+            prim.CreateAttribute(
+                "familyName",
+                Sdf.ValueTypeNames.Token,
+                custom=False
+            ).Set("materialBind")
+
+            # familyType   (token)  -> "partition"
+            prim.CreateAttribute(
+                "familyType",
+                Sdf.ValueTypeNames.Token,
+                custom=False
+            ).Set("partition")
+
+        for subset in (sub_hull, sub_tran, sub_deck):
+            if subset:
+                tag_material_subset(subset)
+                tag_material_subset(subset)
+
+        # ---------------------------------------------------------------------------
+        #  H)  THREE CHECKER MATERIALS  (different UV set & scale)
+        # ---------------------------------------------------------------------------
+
+        def make_checker(mat_path: str, uv_set_index: int, scale: float):
+            # ── material prim ─────────────────────────────────────────────────────
+            mtl = UsdShade.Material.Define(stage, mat_path)
+
+            # ── MDL checker shader ────────────────────────────────────────────────
+            chk = UsdShade.Shader.Define(stage, mat_path + "/Checker")
+            chk.CreateIdAttr("core_definitions::checkerboard")
+            chk.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(scale, scale))
+            chk.CreateInput("texture_coordinate_index", Sdf.ValueTypeNames.Int).Set(uv_set_index)
+            chk_out = chk.CreateOutput("out", Sdf.ValueTypeNames.Float3)     # colour output
+
+            # ── Preview-surface wrapper ───────────────────────────────────────────
+            pbs = UsdShade.Shader.Define(stage, mat_path + "/PreviewSurface")
+            pbs.CreateIdAttr("UsdPreviewSurface")
+
+            diff_col = pbs.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+            diff_col.ConnectToSource(chk_out)                                 # <-- fixed
+
+            pbs_out = pbs.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+
+            # ── hook the surface into the material ───────────────────────────────
+            mtl.CreateSurfaceOutput().ConnectToSource(pbs_out)
+            return mtl
+
+        make_checker("/Hull/Looks/HullChecker",    0, 0.10)   # medium checks
+        make_checker("/Hull/Looks/DeckChecker",    1, 0.25)   # smaller checks
+        make_checker("/Hull/Looks/TransomChecker", 2, 0.05)   # large checks
+
+        # ---------------------------------------------------------------------------
+        #  I)  BIND MATERIALS TO SUBSETS
+        # ---------------------------------------------------------------------------
+        UsdShade.MaterialBindingAPI(sub_hull).Bind(UsdShade.Material.Get(stage, "/Hull/Looks/HullChecker"))
+        UsdShade.MaterialBindingAPI(sub_deck).Bind(UsdShade.Material.Get(stage, "/Hull/Looks/DeckChecker"))
+        UsdShade.MaterialBindingAPI(sub_tran).Bind(UsdShade.Material.Get(stage, "/Hull/Looks/TransomChecker"))
+
+        from pxr import UsdPhysics, PhysxSchema
+
+        root_prim = hull_xform.GetPrim()
+        sim_mesh_prim = sim_mesh.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(sim_mesh_prim)
+        UsdPhysics.RigidBodyAPI.Apply(sim_mesh_prim)
+        PhysxSchema.PhysxRigidBodyAPI.Apply(sim_mesh_prim)
+
+        # ------------------------------------------------------------
+        #  set defaultPrim *inside* a ChangeBlock on the **root layer**
+        # ------------------------------------------------------------
+        with Sdf.ChangeBlock():
+            stage.SetEditTarget(stage.GetRootLayer())          # ensure root
+            stage.SetDefaultPrim(root_prim)                    # token = "Hull"
+
+        stage.GetRootLayer().Save()    # <-- explicit save never hurts
+        print("Saved", namepath + ".usd")
+
+        # sanity-check **immediately** after saving
+        test = Usd.Stage.Open(namepath + ".usd")
+        print("defaultPrim is:", test.GetDefaultPrim().GetPath())
+
+        print(f"✅  wrote defaultPrim + physics to {namepath}.usd")
+
+        stage.Save()
+        print(f"✅  wrote {len(verts_unique)} verts / {len(TriIdx)} tris + 3 UV sets → {namepath}.usd")
+
+        return HULL                       # STL already saved earlier
+
+
+    
+    
     
     def gen_PC_for_Cw(self, draft, NUM_WL = 51, PointsPerWL = 301):
         '''
