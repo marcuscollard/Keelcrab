@@ -21,7 +21,7 @@ from omegaconf import DictConfig, OmegaConf
 
 # create argparser
 parser = argparse.ArgumentParser(description="Tutorial on creating an empty stage.")
-parser.add_argument("--num_envs", type=int, default=2, help="number envs to spawn")
+parser.add_argument("--num_envs", type=int, default=100, help="number envs to spawn")
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -101,10 +101,10 @@ def create_hulls(cfg: DictConfig):
     vecs = list(vectors[chosen_indices])
     for i, vec in enumerate(vecs):
         hull = HP(vec)
-        base = os.path.join("myproj/temp/", f'hull_{i}')
+        base = os.path.join("myproj/temp/", f'hull_{i+4}')
         hull.gen_USD(
             NUM_WL=50,
-            PointsPerWL=200,
+            PointsPerWL=300,
             bit_AddTransom=1,
             bit_AddDeckLid=1,
             bit_RefineBowAndStern=0,
@@ -293,8 +293,8 @@ class SceneCfgOverride(InteractiveSceneCfg):
             collision_props=sim_schemas.CollisionPropertiesCfg()
         ),
         init_state=AssetBaseCfg.InitialStateCfg(
-            pos=[0.0, 0.0, 0.0],
-            rot=[1.0, 0.0, 0.0, 0.0],
+            pos=[0.0, 0.0, 10.0],
+            rot=[1.0, 0.0, 0.0, 0.0]  #[0.7071, 0.0, 0.0, 0.7071],
         ),
     )
 
