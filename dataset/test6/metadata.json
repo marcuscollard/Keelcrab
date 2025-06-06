@@ -1,0 +1,9 @@
+{
+  "video_name": "test6.mp4",
+  "resolution": "640x360",
+  "duration_seconds": 20.640000,
+  "original_fps": 25.00,
+  "extracted_fps": 3,
+  "extracted_frames": 62,
+  "quality": ""
+}
