@@ -31,7 +31,7 @@ for f in "$VIDEO_DIR"/*.mp4; do
       -of default=noprint_wrappers=1:nokey=1 "$f")
 
   # Extract frames at specified FPS
-  ffmpeg -i "$f" -vf fps=$FPS_EXTRACT "$out_dir/frame_%05d.jpg"
+  ffmpeg -i "$f" -vf fps=$FPS_EXTRACT "$out_dir/%05d.jpg"
 
   # Count extracted frames
   frame_count=$(ls "$out_dir" | grep -c '\.jpg')
