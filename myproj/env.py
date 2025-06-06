@@ -48,10 +48,23 @@ from isaaclab.assets import (
     RigidObjectCollection,
     RigidObjectCollectionCfg,
 )
+
+# sensors
+from isaaclab.sensors.ray_caster import RayCasterCfg, patterns, RayCaster
+
+# actuators and articulation
+from isaaclab.actuators import ImplicitActuatorCfg
+# from isaaclab.assets import AssetBaseCfg
+# from isaaclab.assets.articulation import ArticulationCfg
+
+from isaaclab_assets.robots.anymal import ANYMAL_C_CFG
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sim import SimulationContext
 from isaaclab.utils import Timer, configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
+JACKAL_PATH = "/home/ubuntu/Desktop/jackal_basic.usd"
+
+
 import omni.usd
 from pxr import Gf, Sdf, UsdGeom, UsdShade
 
@@ -262,22 +275,77 @@ def create_texture(prim_path_expr: str):
 # 1) collect every USD in your folder (runs once, at import time)
 # load the parameters csv
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-usd_path = os.path.join(SCRIPT_DIR, "temp/*.usd")
+usd_path = os.path.join(SCRIPT_DIR, "temp/*0.usd")
 HULL_BANK = glob.glob(usd_path)
 assert HULL_BANK, "No hull USDs found – check the folder path"
 
+
+robot_config = ArticulationCfg(
+    # spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/Clearpath/Jackal/jackal.usd"),
+    spawn=sim_utils.UsdFileCfg(usd_path=JACKAL_PATH),
+    actuators={"wheel_acts": ImplicitActuatorCfg(joint_names_expr=[".*"], damping=None, stiffness=None)},
+) 
 
 
 @configclass
 class SceneCfgOverride(InteractiveSceneCfg):
 
     # ground plane
-    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
+    ground = AssetBaseCfg(prim_path="/World/Ground", spawn=sim_utils.GroundPlaneCfg())
 
     #lights
     dome_light = AssetBaseCfg(prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75)))
 
     # articulation??
+    # articulation - robot 1
+    # robot_1 = ANYMAL_C_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot_1")
+    # # articulation - robot 2
+    # robot_2 = ANYMAL_C_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot_2")
+    # robot_2.init_state.pos = (0.0, 1.0, 0.6)
+
+    # sensor - ray caster attached to the base of robot 1 that scans the ground
+    # height_scanner = RayCasterCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot_1/base",
+    #     offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+    #     attach_yaw_only=True,
+    #     pattern_cfg=GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
+    #     debug_vis=True,
+    #     mesh_prim_paths=["/World/ground"],
+    # )
+
+    # robot
+    # robot = ANYMAL_C_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+    # robot = robot_config.replace(prim_path="/World/envs/env_.*/Robot")
+    robot = robot_config.replace(
+        prim_path="{ENV_REGEX_NS}/Robot",
+        init_state=ArticulationCfg.InitialStateCfg(
+        pos=(-1.0, -1.0, 15.0),      # 10 m up, matching your hull's spawn height
+        rot=(1.0, 0.0, 0.0, 0.0),  # identity quaternion
+        )
+    )
+
+
+    # # ray‐caster (LIDAR) under the robot’s base, scanning straight down
+    ray_caster_cfg = RayCasterCfg(
+        # match each env’s Robot prim
+        prim_path="{ENV_REGEX_NS}/Robot/base/lidar_cage",
+        # 60 Hz update
+        update_period=1/60,
+        # place it 0.3 m above the base link so rays go down to the ground
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.3)),
+        # only cast onto the ground plane
+        mesh_prim_paths=["/World/Ground"],
+        # lock pitch/roll so it always faces straight down, but follows yaw
+        attach_yaw_only=True,
+        # grid‐pattern: 0.05 m spacing, cover 0.8 m × 1.0 m area under the robot
+        pattern_cfg=patterns.GridPatternCfg(
+            resolution=0.05,
+            size=(0.8, 1.0),
+        ),
+        # enable the debug viz in non‐headless mode
+        debug_vis=not args_cli.headless,
+    )
 
     # ----------------------------------------
     # hulls – one per parallel environment
@@ -317,33 +385,6 @@ class SceneCfgOverride(InteractiveSceneCfg):
     #     ),
     # )
 
-    
-def make_mesh():
-
-    mesh = UsdGeom.Mesh(stage.GetPrimAtPath(hit_prim_path))
-    # Get face vertex indices and UV coordinates
-    fv_indices = mesh.GetFaceVertexIndicesAttr().Get()       # flattened list of vertex indices
-    fv_counts  = mesh.GetFaceVertexCountsAttr().Get()        # should be [3,3,3,...] for triangles
-    uvs_primvar = mesh.GetPrimvar("st") or mesh.GetPrimvar("uv")
-    uvs = uvs_primvar.Get()                                  # UV coordinate array
-
-    # Extract the 3 indices for the hit triangle:
-    tri_idx = hit_face_index
-    i0 = fv_indices[tri_idx*3 + 0]
-    i1 = fv_indices[tri_idx*3 + 1]
-    i2 = fv_indices[tri_idx*3 + 2]
-
-    # Get the corresponding UV coordinates for each vertex of the triangle:
-    if uvs_primvar.GetInterpolation() == UsdGeom.Tokens.faceVarying:
-        # face-varying: there's a unique UV per face-vertex
-        uv0 = uvs[tri_idx*3 + 0]
-        uv1 = uvs[tri_idx*3 + 1]
-        uv2 = uvs[tri_idx*3 + 2]
-    else:
-        # vertex interpolation: one UV per vertex index
-        uv0 = uvs[i0];  uv1 = uvs[i1];  uv2 = uvs[i2]
-
-
 
 def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     """Runs the simulation loop."""
@@ -359,8 +400,14 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     count = 0
     # Simulation loop
     while simulation_app.is_running():
+
+        # # print information from the sensors
+        # print("-------------------------------")
+        # print(scene["ray_caster"])
+        # print("Ray cast hit results: ", scene["ray_caster"].data) #.ray_hits_w)
+
         # Reset
-        if count % 1000 == 0:
+        if count % 100 == 0:
             # reset counter
             count = 0
             # reset the scene entities
@@ -384,7 +431,7 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene):
             # joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
             # robot.write_joint_state_to_sim(joint_pos, joint_vel)
             # clear internal buffers
-            scene.reset()
+            sim.reset()
             print("[INFO]: Resetting scene state...")
 
         # Apply action to robot
@@ -439,16 +486,17 @@ def main(cfg: DictConfig):
         #create_hulls(cfg)
         pass
 
-        from pxr import Usd
-        s = Usd.Stage.Open("/home/ubuntu/IsaacLab/Keelcrab/myproj/temp/hull_2.usd")
-        print(s.GetDefaultPrim())        # should print </Hull>
-        root_layer = s.GetRootLayer()
-        print("layer's defaultPrim token →", root_layer.defaultPrim)  # "Hull"
+        # from pxr import Usd
+        # s = Usd.Stage.Open("/home/ubuntu/IsaacLab/Keelcrab/myproj/temp/hull_2.usd")
+        # print(s.GetDefaultPrim())        # should print </Hull>
+        # root_layer = s.GetRootLayer()
+        # print("layer's defaultPrim token →", root_layer.defaultPrim)  # "Hull"
 
-
-    scene_cfg = SceneCfgOverride(num_envs=args_cli.num_envs, env_spacing=4.0, replicate_physics=False)
+    #args_cli.num_envs
+    scene_cfg = SceneCfgOverride(num_envs=2, env_spacing=4.0, replicate_physics=False)
     with Timer("[INFO] Time to create scene: "):
         scene = InteractiveScene(scene_cfg)
+
 
     with Timer("[INFO] Time to randomize scene: "):
         # DO YOUR OWN OTHER KIND OF RANDOMIZATION HERE!
@@ -468,6 +516,27 @@ def main(cfg: DictConfig):
     while simulation_app.is_running():
         # perform step
         sim.step()
+
+
+def register_sensors(scene, sim):
+    for env in scene.envs:
+        base_path = f"{env.prim_path}/Robot/base/lidar_cage"
+        cfg = RayCasterCfg(
+            prim_path=base_path,
+            update_period=1.0 / 60.0,
+            offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.3)),  # 0.3 m up from base
+            mesh_prim_paths=["/World/Ground"],
+            attach_yaw_only=True,
+            pattern_cfg=patterns.GridPatternCfg(
+                resolution=0.05,
+                size=(0.8, 1.0),
+            ),
+            debug_vis=not args_cli.headless,
+        )
+        sensor = RayCaster(cfg)
+        sim.add_sensor(sensor)
+        sensor.initialize()
+
 
 
 if __name__ == "__main__":
