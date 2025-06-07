@@ -55,6 +55,9 @@ from matplotlib import pyplot as plt
 
 from stl import mesh
 
+import scipy.sparse as sp
+from scipy.sparse.csgraph import dijkstra
+
 # from scipy.spatial import ConvexHull
 
 
@@ -2249,18 +2252,109 @@ class Hull_Parameterization:
             TriIdx.append([coord2idx[tuple(np.round(v, 8))] for v in tri])
         TriIdx = np.asarray(TriIdx, dtype=np.int32)       # (F,3)
         verts_unique = np.asarray(verts_unique, dtype=np.float32)
+        
+        hull_verts = np.unique(TriIdx[F_hull + F_transom:]) 
 
         # ---------------------------------------------------------------------------
-        #  C)  UV SET 0  (st)  —  “oval” mapping for the main shell
+        #  C)  UV SET 0  (st)  —  GEODESIC water-line map for *main shell* vertices
         # ---------------------------------------------------------------------------
-        x0, x1 = verts_unique[:, 0].min(), verts_unique[:, 0].max()
-        Bhalf  = np.abs(verts_unique[:, 1]).max()
-        D      = np.abs(verts_unique[:, 2]).max()
 
-        U0 = (verts_unique[:, 0] - x0) / (x1 - x0)
-        r  = np.sqrt((verts_unique[:, 1] / Bhalf) ** 2 + (verts_unique[:, 2] / D) ** 2)
-        V0 = 0.5 + 0.5 * np.sign(verts_unique[:, 1]) * r
-        st0 = np.stack([U0, V0], axis=1).astype(np.float32)        # (N,2)
+        # ---------------------------------------------------------------------------
+        # 1)  collect vertex IDs that belong to the hull shell
+        # ---------------------------------------------------------------------------
+        hull_vert_ids = np.unique(TriIdx[:F_hull])            # (Nh,)
+
+        # guard: drop any accidental out-of-range index
+        valid_mask    = hull_vert_ids < len(verts_unique)
+        if not valid_mask.all():
+            print("[WARN] Found", (~valid_mask).sum(), "invalid hull-vertex indices; dropping")
+        hull_vert_ids = hull_vert_ids[valid_mask]
+
+        # convenience look-ups
+        x, y, z = verts_unique.T
+        Nh_tot  = len(verts_unique)
+
+        # ---------------------------------------------------------------------------
+        # 2)  build undirected edge graph restricted to hull verts
+        # ---------------------------------------------------------------------------
+        rows, cols, wts = [], [], []
+        for tri in TriIdx[:F_hull]:
+            a, b, c = tri
+            # skip any corner that slipped past the validity check
+            if a >= Nh_tot or b >= Nh_tot or c >= Nh_tot:
+                continue
+            for i, j in ((a, b), (b, c), (c, a)):
+                rows.append(i); cols.append(j)
+                wts.append(np.linalg.norm(verts_unique[i] - verts_unique[j]))
+                rows.append(j); cols.append(i); wts.append(wts[-1])   # symmetric
+
+        G = sp.csr_matrix((wts, (rows, cols)), shape=(Nh_tot, Nh_tot))
+
+        # ---------------------------------------------------------------------------
+        # 3)  water-line seed vertices (port & starboard) inside the shell
+        # ---------------------------------------------------------------------------
+        water_tol  = 0.01
+        on_water   = np.abs(z) < water_tol
+        port_seeds = hull_vert_ids[(on_water[hull_vert_ids]) & (y[hull_vert_ids] < 0)]
+        star_seeds = hull_vert_ids[(on_water[hull_vert_ids]) & (y[hull_vert_ids] > 0)]
+
+        if len(port_seeds) == 0 or len(star_seeds) == 0:
+            raise RuntimeError("Could not find water-line seeds on both sides for hull shell")
+
+        # ---------------------------------------------------------------------------
+        # 4)  multi-source (or single-source) Dijkstra geodesic distance
+        # ---------------------------------------------------------------------------
+        dist_port = dijkstra(G, directed=False, indices=port_seeds, min_only=True)
+        dist_star = dijkstra(G, directed=False, indices=star_seeds, min_only=True)
+
+        if dist_port.ndim == 2:          # happens only if >1 seed
+            dist_port = dist_port.min(axis=0)
+        if dist_star.ndim == 2:
+            dist_star = dist_star.min(axis=0)
+
+        # ---------------------------------------------------------------------------
+        # 5)  per-side normalisation → depth_norm in [0, 1]
+        # ---------------------------------------------------------------------------
+        max_port = dist_port[port_seeds].max() + 1e-12
+        max_star = dist_star[star_seeds].max() + 1e-12
+
+        depth_norm = np.where(
+            y < 0,
+            dist_port / max_port,
+            dist_star / max_star
+        )                                           # everywhere ≤ 1
+
+        # ---------------------------------------------------------------------------
+        # 6)  bow → stern fraction U  (only for hull verts)
+        # ---------------------------------------------------------------------------
+        x0, x1 = x[hull_vert_ids].min(), x[hull_vert_ids].max()
+        U_all  = (x - x0) / (x1 - x0)               # compute for whole array once
+
+        # ---------------------------------------------------------------------------
+        # 7)  signed V centred at 0.5, guaranteed 0 … 1
+        # ---------------------------------------------------------------------------
+        V_all  = 0.5 + 0.5 * np.sign(y) * depth_norm
+
+        # ---------------------------------------------------------------------------
+        # 8)  assemble st0, initialise as (-1, -1) for *non-hull* verts
+        # ---------------------------------------------------------------------------
+        st0 = np.full((Nh_tot, 2), -1.0, dtype=np.float32)
+        st0[hull_vert_ids, 0] = U_all[hull_vert_ids]
+        st0[hull_vert_ids, 1] = V_all[hull_vert_ids]
+
+        
+        # x0, x1 = verts_unique[:, 0].min(), verts_unique[:, 0].max()
+        # Bhalf  = np.abs(verts_unique[:, 1]).max()
+        # D      = np.abs(verts_unique[:, 2]).max()
+
+        # U0 = (verts_unique[:, 0] - x0) / (x1 - x0)
+        # r  = np.sqrt((verts_unique[:, 1] / Bhalf) ** 2 + (verts_unique[:, 2] / D) ** 2)
+        # V0 = 0.5 + 0.5 * np.sign(verts_unique[:, 1]) * r
+        # st0 = np.stack([U0, V0], axis=1).astype(np.float32)        # (N,2)
+
+        # import numpy as np
+        # import scipy.sparse as sp
+        # from scipy.sparse.csgraph import dijkstra
 
         # ---------------------------------------------------------------------------
         #  D)  UV SET 1  (st1)  —  simple planar map for the deck lid
@@ -2354,6 +2448,7 @@ class Hull_Parameterization:
         #  H)  THREE CHECKER MATERIALS  (different UV set & scale)
         # ---------------------------------------------------------------------------
 
+    
         def make_checker(mat_path: str, uv_set_index: int, scale: float):
             # ── material prim ─────────────────────────────────────────────────────
             mtl = UsdShade.Material.Define(stage, mat_path)
@@ -2381,6 +2476,8 @@ class Hull_Parameterization:
         make_checker("/Hull/Looks/HullChecker",    0, 0.10)   # medium checks
         make_checker("/Hull/Looks/DeckChecker",    1, 0.25)   # smaller checks
         make_checker("/Hull/Looks/TransomChecker", 2, 0.05)   # large checks
+
+
 
         # ---------------------------------------------------------------------------
         #  I)  BIND MATERIALS TO SUBSETS

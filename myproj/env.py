@@ -275,7 +275,7 @@ def create_texture(prim_path_expr: str):
 # 1) collect every USD in your folder (runs once, at import time)
 # load the parameters csv
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-usd_path = os.path.join(SCRIPT_DIR, "temp/*0.usd")
+usd_path = os.path.join(SCRIPT_DIR, "temp/*4.usd")
 HULL_BANK = glob.glob(usd_path)
 assert HULL_BANK, "No hull USDs found – check the folder path"
 
@@ -463,9 +463,10 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene):
 #     assert_cfg.prim_path, assert_cfg.spawn, translation=assert_cfg.init_state.pos, orientation=assert_cfg.init_state.rot,
 # )
 
-
-def _setup_scene(self):
+from myproj.shader import ShaderManager
+def _setup_scene():
     pass
+    
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig):
@@ -483,7 +484,7 @@ def main(cfg: DictConfig):
         # DO YOUR OWN OTHER KIND OF RANDOMIZATION HERE!
         # Note: Just need to acquire the right attribute about the property you want to set
         # Here is an example on setting color randomly
-        #create_hulls(cfg)
+        # create_hulls(cfg)
         pass
 
         # from pxr import Usd
@@ -492,10 +493,25 @@ def main(cfg: DictConfig):
         # root_layer = s.GetRootLayer()
         # print("layer's defaultPrim token →", root_layer.defaultPrim)  # "Hull"
 
-    #args_cli.num_envs
-    scene_cfg = SceneCfgOverride(num_envs=2, env_spacing=4.0, replicate_physics=False)
+    with Timer("[INFO] Time to setup scene: "):
+        _setup_scene()
+
+        #args_cli.num_envs
+    # 1. Build the scene (this builds & lays out the N cloned hulls)
+    scene_cfg = SceneCfgOverride(num_envs=2,
+                                env_spacing=4.0,
+                                replicate_physics=False)
+
     with Timer("[INFO] Time to create scene: "):
-        scene = InteractiveScene(scene_cfg)
+        scene = InteractiveScene(scene_cfg)      # stage now exists
+
+    # 2. Gather the prim paths you want to paint.
+    #    If your hull asset’s root prim is called "hull", every clone
+    #    will live under /World/envs/env_0/hull, /World/envs/env_1/hull, …
+    hull_paths = [f"/World/envs/env_{i}/hull" for i in range(scene_cfg.num_envs)]
+
+    # 3. Create the provider + material and bind it to those prims.
+    provider = ShaderManager.create_dynamic_material(stage=scene.stage, prim_paths=hull_paths)
 
 
     with Timer("[INFO] Time to randomize scene: "):
