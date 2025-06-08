@@ -20,84 +20,102 @@ class ShaderManager:
     PRIM_PATH = "/Hull"                       # where to bind the material
     MDL_PATH  = "file:///opt/IsaacSim/kit/mdl/core/Base/OmniPBR.mdl"
     TEX_NAME  = "live_hull"               # dynamic://live_hull
-    MAT_PATH  = "/Hull/Looks/HullDyna"
+    MAT_PATH  = "/hooks/hull_dyna"
     # ----------------------------------------------------------------------
     
+
     @staticmethod
-    def create_dynamic_material(
-        stage,
-        prim_paths,
+    def create_dynamic_hull(
+        stage: Usd.Stage,
+        prim_path,
+        idx,
         *,
-        tex_name="paint_mask",
+        tex_name=TEX_NAME,
         tex_rgba=None,
-        height=50,
-        width=300,
-        mdl_path="/OmniPBR.mdl",
+        size=(50, 300),                # (H, W)
+        mdl_path=MDL_PATH,
+        uv_set_index=0,                # 0 = primvar:st, 1 = st1, …
     ):
         """
-        Create (or re-use) an OmniPBR material whose `diffuse_texture`
-        points at a `dynamic://<tex_name>` URI, and bind it to all prims
-        in *prim_paths*.
-
         Parameters
         ----------
-        stage : Usd.Stage
-            The live stage returned by InteractiveScene().
-        prim_paths : list[str] | tuple[str]
-            Absolute USD paths of the prims to bind the material to.
-        tex_name : str, optional
-            Name of the DynamicTextureProvider and the URI suffix.
-        tex_rgba : np.ndarray[H,W,4] | None
-            Optional RGBA data; if None, a solid green texture is created.
-        height, width : int
-            Used only when *tex_rgba* is None.
-        mdl_path : str
-            Resolved asset path to the MDL that contains OmniPBR.
+        stage : Usd.Stage              the live stage (already loaded)
+        prim_paths : iterable[str]     mesh prim paths that need the material
+        tex_name : str                 name of the DynamicTextureProvider
+        tex_rgba : ndarray | None      RGBA image; if None a solid green is used
+        size : (H, W)                  only used when tex_rgba is None
+        mdl_path : str                 resolved MDL asset containing OmniPBR
+        uv_set_index : int             0 = st, 1 = st1, etc.
         """
-        # ------------------------------------------------------------------
-        # 1. Make / re-use a DynamicTextureProvider
-        # ------------------------------------------------------------------
+        # ------------------------------------------------------------------ #
+        # 1.  Dynamic texture provider
+        # ------------------------------------------------------------------ #
         provider = ui.DynamicTextureProvider(tex_name)
         if tex_rgba is None:
-            tex_rgba = np.full((height, width, 4), [0, 255, 0, 255], np.uint8)
-        # provider expects shape (H, W, 4) and then [H, W, 4] as metadata
+            H, W = size
+            tex_rgba = np.full((H, W, 4), [0, 255, 0, 255], np.uint8)
         provider.set_data_array(tex_rgba, list(tex_rgba.shape))
 
-        # ------------------------------------------------------------------
-        # 2. Make / re-use the Material + Shader
-        # ------------------------------------------------------------------
-        MAT_PATH = f"/World/Materials/{tex_name}"
-        mat = UsdShade.Material.Get(stage, MAT_PATH)
+        # ------------------------------------------------------------------ #
+        # 2.  Material + Shader (re-use if they already exist)
+        # ------------------------------------------------------------------ #
+        mat_path = f"/World/Materials/{tex_name}"
+        shd_path = f"{mat_path}/OmniPBR"
+
+        mat = UsdShade.Material.Get(stage, mat_path)
         if True:
-            # Create a fresh material only once; subsequent calls re-use it
-            mat = UsdShade.Material.Define(stage, MAT_PATH)
-            shd = UsdShade.Shader.Define(stage, f"{MAT_PATH}/OmniPBR")
+            # -------- (a) create fresh material & shader -------------------
+            mat = UsdShade.Material.Define(stage, mat_path)
+            shd = UsdShade.Shader.Define(stage, shd_path)
             shd.CreateIdAttr("OmniPBR")
 
-            # ImplementationSource must be set before SourceAsset on new USD versions
+            # MDL linkage (ImplementationSource must be set first on new USD)
             shd.CreateImplementationSourceAttr(UsdShade.Tokens.sourceAsset)
             shd.SetSourceAsset(Sdf.AssetPath(mdl_path), "mdl")
             shd.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
 
-            # diffuse_texture input → dynamic URI
-            shd.CreateInput("diffuse_texture", Sdf.ValueTypeNames.Asset)\
-            .Set(Sdf.AssetPath(f"dynamic://{tex_name}"))
+            # ---------- inputs --------------------------------------------
+            # which UV set the texture will use
+            shd.CreateInput("diffuse_texture_st_index",
+                            Sdf.ValueTypeNames.Int).Set(uv_set_index)
 
-            # Standard OmniPBR outputs
-            for name in ("surface", "volume", "displacement"):
-                out = shd.CreateOutput(name, Sdf.ValueTypeNames.Token)
-                getattr(mat, f"Create{ name.capitalize() }Output")()\
-                    .ConnectToSource(out)
+            # actual texture
+            shd.CreateInput("diffuse_texture",
+                            Sdf.ValueTypeNames.Asset).Set(
+                Sdf.AssetPath(f"dynamic://{tex_name}")
+            )
 
-        # ------------------------------------------------------------------
-        # 3. Bind to every prim (material can be instanced!)
-        # ------------------------------------------------------------------
+            # if you project UVW instead, uncomment:
+            # shd.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(True)
+
+            # ---------- required OmniPBR outputs ---------------------------
+            out_surf = shd.CreateOutput("surface",      Sdf.ValueTypeNames.Token)
+            out_vol  = shd.CreateOutput("volume",       Sdf.ValueTypeNames.Token)
+            out_disp = shd.CreateOutput("displacement", Sdf.ValueTypeNames.Token)
+
+            mat.CreateSurfaceOutput().ConnectToSource(out_surf)
+            mat.CreateVolumeOutput().ConnectToSource(out_vol)
+            mat.CreateDisplacementOutput().ConnectToSource(out_disp)
+
+        else:
+            # shader already exists → just grab it
+            shd = UsdShade.Shader.Get(stage, shd_path)
+
+        # ------------------------------------------------------------------ #
+        # 3.  Bind material to every prim listed
+        # ------------------------------------------------------------------ #
         for p in prim_paths:
-            UsdShade.MaterialBindingAPI(stage.GetPrimAtPath(p)).Bind(mat)
+            prim = stage.GetPrimAtPath(p)
+            if not prim:
+                print(f"[WARN] Prim {p} not found, skipping bind")
+                continue
+            UsdShade.MaterialBindingAPI(prim).Bind(mat)
 
-        print(f"✅  Bound dynamic://{tex_name} to {len(prim_paths)} prims")
+        print(f"✅  Bound dynamic://{tex_name} (UV set {uv_set_index}) "
+            f"to {len(prim_paths)} prims")
 
-        return provider      # handy if you want to update the texture later
+        return provider            # handy for updates at runtime
+
 
     
     
@@ -174,6 +192,4 @@ def make_green_to_white_gradient(tex_name="live_hull", width=300, height=50):
     provider = ui.DynamicTextureProvider(tex_name)  # no "dynamic://" prefix
     provider.set_data_array(rgba, [height, width, 4])
 
-# call it once
-make_green_to_white_gradient()
-print("✅  dynamic://live_hull now shows a green→white gradient")
+

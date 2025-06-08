@@ -114,7 +114,7 @@ def create_hulls(cfg: DictConfig):
     vecs = list(vectors[chosen_indices])
     for i, vec in enumerate(vecs):
         hull = HP(vec)
-        base = os.path.join("myproj/temp/", f'hull_{i+4}')
+        base = os.path.join("myproj/temp/", f'hull_{i}')
         hull.gen_USD(
             NUM_WL=50,
             PointsPerWL=300,
@@ -275,7 +275,7 @@ def create_texture(prim_path_expr: str):
 # 1) collect every USD in your folder (runs once, at import time)
 # load the parameters csv
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-usd_path = os.path.join(SCRIPT_DIR, "temp/*4.usd")
+usd_path = os.path.join(SCRIPT_DIR, "temp/*.usd")
 HULL_BANK = glob.glob(usd_path)
 assert HULL_BANK, "No hull USDs found – check the folder path"
 

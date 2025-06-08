@@ -2345,7 +2345,6 @@ class Hull_Parameterization:
         numTriangles = hullTriangles
         
         
-        
         #add triangles if there is a transom
         if bit_AddTransom:
             wl_above = len([i for i in z if i > self.SK[1]])
@@ -2450,15 +2449,15 @@ class Hull_Parameterization:
         # ---------------------------------------------------------------------------
         sub_hull = UsdGeom.Subset.Define(stage, "/Hull/Geom/HullFaces")
         sub_hull.CreateElementTypeAttr("face")
-        sub_hull.CreateIndicesAttr(list(range(0, F_hull)))
+        sub_hull.CreateIndicesAttr(list(range(0, hullTriangles)))
 
         sub_tran = UsdGeom.Subset.Define(stage, "/Hull/Geom/TransomFaces")
         sub_tran.CreateElementTypeAttr("face")
-        sub_tran.CreateIndicesAttr(list(range(F_hull, F_hull + F_transom)))
+        sub_tran.CreateIndicesAttr(list(range(hullTriangles, hullTriangles + transomTriangles)))
 
         sub_deck = UsdGeom.Subset.Define(stage, "/Hull/Geom/DeckFaces")
         sub_deck.CreateElementTypeAttr("face")
-        sub_deck.CreateIndicesAttr(list(range(F_hull + F_transom, len(TriIdx))))
+        sub_deck.CreateIndicesAttr(list(range(hullTriangles + transomTriangles, len(TriIdx))))
 
         def tag_material_subset(subset):
             prim = subset.GetPrim()
