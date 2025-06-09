@@ -1760,7 +1760,7 @@ class Hull_Parameterization:
         return np.array(WL)
         
         
-    def create_UVs(self, HULL, hullTriangles, transomTriangles, numTriangles):
+    def create_UVs(self, HULL, hullTriangles, add_decklid, transomTriangles, numTriangles):
         """
         Create UV coordinates for the hull mesh based on the waterline map.
         This function computes the UV coordinates for the hull mesh based on the
@@ -1917,6 +1917,7 @@ class Hull_Parameterization:
         #  D)  UV SET 1  (st1)  —  simple planar map for the deck lid
         # ---------------------------------------------------------------------------
         # put entire deck into 0-1×0-1 rectangle; others get dummy (-1)
+        if 
         st1 = np.full_like(st0, -1.0)
         deck_verts = np.unique(TriIdx[hullTriangles + transomTriangles:])        # vertex id’s used by lid
         x_min, x_max = verts_unique[deck_verts, 0].min(), verts_unique[deck_verts, 0].max()
@@ -1944,7 +1945,7 @@ class Hull_Parameterization:
 
 
     
-    def gen_stl(self, return_uv = False, NUM_WL = 50, PointsPerWL = 300, bit_AddTransom = 1, bit_AddDeckLid = 0, bit_RefineBowAndStern = 0, namepath = 'Hull_Mesh', require_convex=False):
+    def gen_stl(self, return_uv = False, NUM_WL = 50, PointsPerWL = 300, bit_AddTransom = 0, bit_AddDeckLid = 0, bit_RefineBowAndStern = 0, namepath = 'Hull_Mesh', require_convex=False):
         # This function generates a surface of the mesh by iterating through the points on the waterlines
         
         #compute number of triangles in the mesh
@@ -2128,13 +2129,9 @@ class Hull_Parameterization:
             for i in range(0,len(pts_trans)):                       
                 pts_trans[i] = pts[z_idx+i][-1,:]
                 
-           
-            
             pts_tranp = np.array(pts_trans)
             
             pts_tranp[:,1] *= -1.0
-            
-            
             
             
             HULL.vectors[hullTriangles] = np.array([pts_trans[0], pts_trans[1], pts_tranp[1]])
@@ -2166,12 +2163,41 @@ class Hull_Parameterization:
             
         print('Number of Triangles: ', numTriangles)
 
+        def write_obj_with_uv(path, tri_vec, tri_uv):
+            """
+            path: str, output file path (without .obj)
+            tri_vec: (N, 3, 3) numpy array of triangle vertices
+            tri_uv:  (N, 3, 2) numpy array of per-corner UVs
+            """
+            with open(path + ".obj", "w") as f:
+                vertex_index = 1  # OBJ uses 1-based indexing
+
+                for i in range(tri_vec.shape[0]):
+                    for j in range(3):
+                        v = tri_vec[i, j]
+                        uv = tri_uv[i, j]
+                        f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+                        f.write(f"vt {uv[0]} {uv[1]}\n")
+
+                for i in range(tri_vec.shape[0]):
+                    # 3 vertices per triangle, each with corresponding vt
+                    idx1 = vertex_index
+                    idx2 = vertex_index + 1
+                    idx3 = vertex_index + 2
+                    f.write(f"f {idx1}/{idx1} {idx2}/{idx2} {idx3}/{idx3}\n")
+                    vertex_index += 3
+
         if return_uv:
             
             # st0, *_ = self.create_UVs(HULL, hullTriangles, transomTriangles, numTriangles)
             st0, st1, st2, verts_unique, TriIdx, hull_verts, port_seeds, star_seeds = self.create_UVs(HULL, hullTriangles, transomTriangles, numTriangles)
+            write_obj_with_uv(namepath, HULL.vectors, st0[TriIdx[:hullTriangles]])
             
             
+            
+        
+
+                    
         HULL.save(namepath + '.stl')
                 
         return st0[TriIdx[:hullTriangles]]#, st1[TriIdx[hullTriangles:]], st2[TriIdx[hullTriangles + transomTriangles:]], verts_unique, TriIdx, hull_verts, port_seeds, star_seeds, HULL

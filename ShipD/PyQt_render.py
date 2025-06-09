@@ -129,11 +129,12 @@ class HullViewer(QtWidgets.QMainWindow):
         hull = HP(self.params)
         base = os.path.join(tempfile.gettempdir(), 'hull_view')
         hull.gen_stl(
+            return_uv=True,
             NUM_WL=50,
-            PointsPerWL=150,
-            bit_AddTransom=1,
-            bit_AddDeckLid=1,
-            bit_RefineBowAndStern=1,
+            PointsPerWL=300,
+            bit_AddTransom=0,
+            bit_AddDeckLid=0,
+            bit_RefineBowAndStern=0,
             namepath=base
         )
         stl_file = base + '.stl'
@@ -141,12 +142,16 @@ class HullViewer(QtWidgets.QMainWindow):
             print(f"STL generation failed: {stl_file} not found")
             return
         pv_mesh = pv.read(stl_file)
+        
+        mesh.point_data["Texture Coordinates"] = st  # shape (N, 2)
+        
         if self.mesh_actor is None:
-            self.mesh_actor = self.plotter.add_mesh(pv_mesh, show_edges=True)
+            self.mesh_actor = self.plotter.add_mesh(pv_mesh, show_edges=True, texture=None, color='lightblue')
             self.plotter.reset_camera()
         else:
             self.mesh_actor.mapper.SetInputData(pv_mesh)
         self.plotter.render()
+
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
