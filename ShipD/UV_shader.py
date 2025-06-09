@@ -123,7 +123,7 @@ def stprim_to_tris(flat_st):
 
 
 class HullViewer(QtWidgets.QMainWindow):
-    """Interactive hull viewer with a live UV‑map pane."""
+    """Interactive hull viewer with a live UV-map pane."""
 
     def __init__(self, vectors=None):
         super().__init__()
@@ -267,8 +267,8 @@ class HullViewer(QtWidgets.QMainWindow):
             return_uv=True,
             NUM_WL=50,
             PointsPerWL=300,
-            bit_AddTransom=1,
-            bit_AddDeckLid=1,
+            bit_AddTransom=0,
+            bit_AddDeckLid=0,
             bit_RefineBowAndStern=0,
             namepath=base,
         )

@@ -1755,12 +1755,10 @@ class Hull_Parameterization:
             for i in range(0,pts_stern):
                 WL.append([STERN[i,0], STERN[i,1], z])
             
-            
-                
         return np.array(WL)
         
         
-    def create_UVs(self, HULL, hullTriangles, add_decklid, transomTriangles, numTriangles):
+    def create_UVs(self, HULL, hullTriangles, bit_AddDeckLid, transomTriangles, numTriangles):
         """
         Create UV coordinates for the hull mesh based on the waterline map.
         This function computes the UV coordinates for the hull mesh based on the
@@ -1865,7 +1863,6 @@ class Hull_Parameterization:
         depth_norm[port_side] = dist_port[port_side] / max_port
         depth_norm[star_side] = dist_star[star_side] / max_star
 
-
         depth_norm = np.where(
             y < 0,
             dist_port / max_port,
@@ -1877,6 +1874,7 @@ class Hull_Parameterization:
         # ---------------------------------------------------------------------------
         x0, x1 = x[hull_vert_ids].min(), x[hull_vert_ids].max()
         U_all  = (x - x0) / (x1 - x0)               # compute for whole array once
+        
 
         # ---------------------------------------------------------------------------
         # 7)  signed V centred at 0.5, guaranteed 0 … 1
@@ -1898,6 +1896,48 @@ class Hull_Parameterization:
         st0 = np.full((Nh_tot, 2), -1.0, dtype=np.float32)
         st0[hull_vert_ids, 0] = U_all[hull_vert_ids]
         st0[hull_vert_ids, 1] = V_all[hull_vert_ids]
+        
+        # st0[0] is ascending. Find all that are 0.5
+
+        # st0: (Nh_tot, 2)   — your per-vertex UV array, V in [0,1]
+        # TriIdx: (n_tris, 3) — your triangle‐corner index array into st0
+        # We assume “midline” means V == 0.5, and “right” means U > 0.5
+
+        # 1) Find midline vertices
+        midline_ids = np.where(np.isclose(st0[:,1], 0.5, atol=1e-6))[0]
+
+        # 2) Prepare to duplicate
+        orig_st0 = st0.copy()
+        n_before = st0.shape[0]
+
+        # 3) Append a copy of each midline UV to the end of st0
+        st0 = np.vstack([ st0, orig_st0[midline_ids] ])
+
+        # 4) Build a map old_id→new_id
+        new_ids = np.arange(n_before, n_before + len(midline_ids))
+        dup_map = dict(zip(midline_ids, new_ids))
+
+        # 5) Compute per-triangle mean U to decide which side
+        tri_uvs    = orig_st0[TriIdx]                # (n_tris, 3, 2)
+        tri_u_mean = tri_uvs[:,:,0].mean(axis=1)      # (n_tris,)
+
+        # 6) For every triangle on the “right” (U>0.5), 
+        #    if it references a midline_id, switch it to the duplicate
+        right_tris = np.where(tri_u_mean > 0.5)[0]
+        for tri_i in right_tris:
+            for corner in range(3):
+                vid = TriIdx[tri_i, corner]
+                if vid in dup_map:
+                    TriIdx[tri_i, corner] = dup_map[vid]
+
+        # Now st0 has length Nh_tot + len(midline_ids), 
+        # and TriIdx is rewired so left‐side tris use the original seam verts,
+        # right‐side tris use their own duplicates.
+
+        # 7) Build your expanded mesh exactly as before, then assign
+        #    expanded_mesh.point_data["Texture Coordinates"] = st0
+
+
 
         
         # x0, x1 = verts_unique[:, 0].min(), verts_unique[:, 0].max()
@@ -1917,24 +1957,25 @@ class Hull_Parameterization:
         #  D)  UV SET 1  (st1)  —  simple planar map for the deck lid
         # ---------------------------------------------------------------------------
         # put entire deck into 0-1×0-1 rectangle; others get dummy (-1)
-        if 
-        st1 = np.full_like(st0, -1.0)
-        deck_verts = np.unique(TriIdx[hullTriangles + transomTriangles:])        # vertex id’s used by lid
-        x_min, x_max = verts_unique[deck_verts, 0].min(), verts_unique[deck_verts, 0].max()
-        y_min, y_max = verts_unique[deck_verts, 1].min(), verts_unique[deck_verts, 1].max()
-        st1[deck_verts, 0] = (verts_unique[deck_verts, 0] - x_min) / (x_max - x_min)
-        st1[deck_verts, 1] = (verts_unique[deck_verts, 1] - y_min) / (y_max - y_min)
+        st1, st2 = None, None
+        if bit_AddDeckLid:
+            st1 = np.full_like(st0, -1.0)
+            deck_verts = np.unique(TriIdx[hullTriangles + transomTriangles:])        # vertex id’s used by lid
+            x_min, x_max = verts_unique[deck_verts, 0].min(), verts_unique[deck_verts, 0].max()
+            y_min, y_max = verts_unique[deck_verts, 1].min(), verts_unique[deck_verts, 1].max()
+            st1[deck_verts, 0] = (verts_unique[deck_verts, 0] - x_min) / (x_max - x_min)
+            st1[deck_verts, 1] = (verts_unique[deck_verts, 1] - y_min) / (y_max - y_min)
 
-        # ---------------------------------------------------------------------------
-        #  E)  UV SET 2  (st2)  —  planar map for the transom
-        # ---------------------------------------------------------------------------
-        st2 = np.full_like(st0, -1.0)
-        transom_v = np.unique(TriIdx[hullTriangles:hullTriangles + transomTriangles])
-        y_min, y_max = verts_unique[transom_v, 1].min(), verts_unique[transom_v, 1].max()
-        z_min, z_max = verts_unique[transom_v, 2].min(), verts_unique[transom_v, 2].max()
-        st2[transom_v, 0] = (verts_unique[transom_v, 1] - y_min) / (y_max - y_min)
-        st2[transom_v, 1] = (verts_unique[transom_v, 2] - z_min) / (z_max - z_min)
-        
+            # ---------------------------------------------------------------------------
+            #  E)  UV SET 2  (st2)  —  planar map for the transom
+            # ---------------------------------------------------------------------------
+            st2 = np.full_like(st0, -1.0)
+            transom_v = np.unique(TriIdx[hullTriangles:hullTriangles + transomTriangles])
+            y_min, y_max = verts_unique[transom_v, 1].min(), verts_unique[transom_v, 1].max()
+            z_min, z_max = verts_unique[transom_v, 2].min(), verts_unique[transom_v, 2].max()
+            st2[transom_v, 0] = (verts_unique[transom_v, 1] - y_min) / (y_max - y_min)
+            st2[transom_v, 1] = (verts_unique[transom_v, 2] - z_min) / (z_max - z_min)
+            
         print(st0.shape, "UV set 0 generated for", len(hull_vert_ids), "hull vertices")
             # print min and max of st0
         print("UV set 0: min =", st0.min(axis=0), ", max =", st0.max(axis=0))
@@ -2058,8 +2099,6 @@ class Hull_Parameterization:
                 
                 for j in range(0,idx_WLB0):
                     TriVec.append([pts[i+1][idx_WLB1], pts[i][j+1], pts[i][j]])
-
-                
             
             else: 
                 
@@ -2190,12 +2229,11 @@ class Hull_Parameterization:
         if return_uv:
             
             # st0, *_ = self.create_UVs(HULL, hullTriangles, transomTriangles, numTriangles)
-            st0, st1, st2, verts_unique, TriIdx, hull_verts, port_seeds, star_seeds = self.create_UVs(HULL, hullTriangles, transomTriangles, numTriangles)
+            st0, st1, st2, verts_unique, TriIdx, hull_verts, port_seeds, star_seeds = self.create_UVs(HULL, hullTriangles, bit_AddDeckLid, transomTriangles, numTriangles)
             write_obj_with_uv(namepath, HULL.vectors, st0[TriIdx[:hullTriangles]])
             
             
             
-        
 
                     
         HULL.save(namepath + '.stl')

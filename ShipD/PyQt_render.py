@@ -5,6 +5,7 @@ import numpy as np
 from PyQt5 import QtWidgets, QtCore, QtGui
 import pyvista as pv
 from pyvistaqt import QtInteractor
+from PIL import Image
 
 from HullParameterization import Hull_Parameterization as HP
 
@@ -128,7 +129,7 @@ class HullViewer(QtWidgets.QMainWindow):
     def update_hull(self):
         hull = HP(self.params)
         base = os.path.join(tempfile.gettempdir(), 'hull_view')
-        hull.gen_stl(
+        st0 = hull.gen_stl(
             return_uv=True,
             NUM_WL=50,
             PointsPerWL=300,
@@ -143,14 +144,102 @@ class HullViewer(QtWidgets.QMainWindow):
             return
         pv_mesh = pv.read(stl_file)
         
-        mesh.point_data["Texture Coordinates"] = st  # shape (N, 2)
+       # Get face connectivity (VTK stores faces as [3, i0, i1, i2, 3, i3, i4, i5, ...])
+        faces = pv_mesh.faces.reshape(-1, 4)[:, 1:]  # shape (n_faces, 3)
+
+        # Recover the vertex positions of each face corner
+        verts = pv_mesh.points[faces]               # shape (n_faces, 3, 3)
+        flat_vertices = verts.reshape(-1, 3)        # shape (n_faces * 3, 3)
+
+        print(st0.shape)
+
+        uvs = st0.reshape(-1, 2)  # Now shape is (163284, 2)
+
+        # Double-check UV match
+        n_faces = pv_mesh.n_faces
+        assert uvs.shape[0] == n_faces * 3, f"Mismatch: {uvs.shape[0]} vs {n_faces * 3}"
+
+        # Create face array: each triangle is [3, i, i+1, i+2]
+        flat_faces = np.hstack([[3, i, i+1, i+2] for i in range(0, len(flat_vertices), 3)])
+
+        # Build expanded mesh
+        expanded_mesh = pv.PolyData(flat_vertices, flat_faces)
+        expanded_mesh.point_data["Texture Coordinates"] = uvs
+        expanded_mesh.active_texture_coordinates = uvs
         
+        print("Expanded mesh n_points:", expanded_mesh.n_points)
+        print("UVs shape:", uvs.shape)
+        print("'Texture Coordinates' in point_data?", "Texture Coordinates" in expanded_mesh.point_data)
+        
+        # Define size
+        height = 200
+        width = 3 * height  # 6:1 aspect ratio
+
+        # Create a UV grid
+        uv_map = np.zeros((height, width, 3), dtype=np.uint8)
+
+        # Fill with horizontal gradient (R), vertical gradient (G), and a diagonal line (B)
+        for y in range(height):
+            for x in range(width):
+                uv_map[y, x, 0] = int(255 * x / width)      # Red: horizontal gradient
+                uv_map[y, x, 1] = int(255 * y / height)     # Green: vertical gradient
+                uv_map[y, x, 2] = int(255 * ((x + y) % 20 < 10))  # Blue: checker line
+
+        # Save image
+        img = Image.fromarray(uv_map)
+        img.save("uv_texture_6x1.png")
+        print('image saved as uv_texture_6x1.png')
+        
+        texture = pv.read_texture("uv_texture_6x1.png")
+        texture.repeat = False         # no wrap
+        texture.edge_clamp = True      # clamp to border
+
         if self.mesh_actor is None:
-            self.mesh_actor = self.plotter.add_mesh(pv_mesh, show_edges=True, texture=None, color='lightblue')
+            self.mesh_actor = self.plotter.add_mesh(expanded_mesh, show_edges=False, texture=texture)
             self.plotter.reset_camera()
         else:
-            self.mesh_actor.mapper.SetInputData(pv_mesh)
+            self.mesh_actor.mapper.SetInputData(expanded_mesh)
+        print("rendering hull with parameters:")
         self.plotter.render()
+        
+        import matplotlib.pyplot as plt
+
+        # st: your UV array, shape (n_faces, 3, 2)
+        # e.g. st = np.load(...)
+
+        fig, ax = plt.subplots(figsize=(6,6))
+
+        # draw the triangle outlines
+        for tri in st0:
+            # close the loop by appending the first corner again
+            loop = np.vstack([tri, tri[0]])
+            ax.plot(loop[:, 0], loop[:, 1], linewidth=0.5, alpha=0.7)
+
+        # scatter the UV corner points
+        uv_pts = st0.reshape(-1, 2)
+        ax.scatter(uv_pts[:, 0], uv_pts[:, 1], s=1)
+
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_aspect('equal', 'box')
+        ax.set_xlabel('U')
+        ax.set_ylabel('V')
+        ax.set_title('UV Layout in Texture Domain')
+        plt.tight_layout()
+        plt.show()
+
+    
+
+        # # tris_uv_pix: your (n_tris, 3, 2) array *in pixel coords* (u from 0→UV_W, v from 0→UV_H)
+        # feature_mask = dummy_feature_mask(tris_uv_pix, (width, height))
+
+        # pm = uv_pixmap((UV_W, UV_H), tris_uv_pix, feature_mask)
+
+        # self.uv_scene.clear()
+        # self.uv_scene.addPixmap(pm)
+        # self.uv_scene.setSceneRect(0, 0, UV_W, UV_H)
+
+
 
 
 if __name__ == "__main__":
