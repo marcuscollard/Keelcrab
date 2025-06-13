@@ -1757,6 +1757,172 @@ class Hull_Parameterization:
             
         return np.array(WL)
         
+    
+    def create_UV_midline(self, HULL, hullTriangles, bit_AddDeckLid, transomTriangles, numTriangles):
+        
+        all_tris = np.copy(HULL.vectors)                 # (F,3,3)
+        
+        # ---------------------------------------------------------------------------
+        #  B)  UNIQUE-VERTEX TABLE  +  FACE-VERTEX INDICES
+        # ---------------------------------------------------------------------------
+        coord2idx, verts_unique, TriIdx = {}, [], []
+        for tri in all_tris.reshape(-1, 3):
+            key = tuple(np.round(tri, 8))                # avoid FP noise
+            if key not in coord2idx:
+                coord2idx[key] = len(verts_unique)
+                verts_unique.append(key)
+            # build indices per corner
+        for tri in all_tris:
+            TriIdx.append([coord2idx[tuple(np.round(v, 8))] for v in tri])
+        TriIdx = np.asarray(TriIdx, dtype=np.int32)       # (F,3)
+        verts_unique = np.asarray(verts_unique, dtype=np.float32)
+
+        # ---------------------------------------------------------------------------
+        # 1)  collect vertex IDs that belong to the hull shell
+        # ---------------------------------------------------------------------------
+        hull_vert_ids = np.unique(TriIdx[:hullTriangles])            # (Nh,)
+
+        # guard: drop any accidental out-of-range index
+        valid_mask    = hull_vert_ids < len(verts_unique)
+        if not valid_mask.all():
+            print("[WARN] Found", (~valid_mask).sum(), "invalid hull-vertex indices; dropping")
+        hull_vert_ids = hull_vert_ids[valid_mask]
+
+        # convenience look-ups
+        x, y, z = verts_unique.T
+        Nh_tot  = len(verts_unique)
+
+        
+        # ---------------------------------------------------------------------------
+        # 2)  Build undirected edge graph restricted to hull verts  (vectorised)
+        # ---------------------------------------------------------------------------
+        tri = TriIdx[:hullTriangles].astype(np.int32)
+
+        # Form the three directed edges per triangle in one stack operation
+        edges = np.vstack((tri[:, [0, 1]],
+                        tri[:, [1, 2]],
+                        tri[:, [2, 0]]))
+
+        # Keep edges whose two vertices are on the hull
+        inside = (edges < Nh_tot).all(axis=1)
+        print("[INFO] Found", inside.sum(), "edges in the hull mesh")
+        u = edges[inside, 0]
+        v = edges[inside, 1]
+
+        # Edge weights (Euclidean lengths) – store as float32 to save memory / bandwidth
+        wts = np.linalg.norm(verts_unique[u] - verts_unique[v], axis=1).astype(np.float32)
+
+        # One–direction CSR; will be symmetrised once below
+        G = sp.csr_matrix((wts, (u, v)), shape=(Nh_tot, Nh_tot), dtype=np.float32)
+
+        # Symmetrise in a single sparse add – half the edges, half the build time
+        G = G + G.T
+
+        # ---------------------------------------------------------------------------
+        # 3)  Mid‑line seam seed vertices
+        # ---------------------------------------------------------------------------
+        mid_tol = 1e-8          # 0.01 units around centre plane (y≈0)
+
+        on_mid = np.abs(y) < mid_tol
+
+        # z‑coordinate (vertical). Smallest values are the very bottom of the hull.
+        z_coords = verts_unique[:, 2]
+        z_min, z_max = z_coords.min(), z_coords.max()
+        threshold = z_min + (z_max - z_min) / 3.0   # lower one‑third
+        on_bottom = z_coords <= threshold
+
+        # combined mask on the *global* vertex set
+        bottom_centre_mask = on_mid & on_bottom
+
+        mid_seeds = hull_vert_ids[bottom_centre_mask[hull_vert_ids]]
+        if mid_seeds.size == 0:
+            raise RuntimeError(f"Could not find any mid‑line seam seeds (|y| < {mid_tol}).")
+
+        # ---------------------------------------------------------------------------
+        # 4)  Multi‑source Dijkstra geodesic distance from mid‑line
+        # ---------------------------------------------------------------------------
+        # SciPy treats the matrix as undirected because it is symmetric, but keep
+        # directed=False for clarity.
+        dist_mid = dijkstra(G, directed=False, indices=mid_seeds, min_only=True).astype(np.float32)
+        # if >1 seed, take per-vertex minimum
+        if dist_mid.ndim == 2:
+            dist_mid = dist_mid.min(axis=0)
+
+        # ---------------------------------------------------------------------------
+        # 5)  per-side normalisation → depth_norm in [0, 1]
+        # ---------------------------------------------------------------------------
+        # masks for each side of the mid-plane
+        port_side = (y < 0) & np.isfinite(dist_mid)
+        star_side = (y > 0) & np.isfinite(dist_mid)
+
+        max_port = dist_mid[port_side].max() + 1e-12
+        max_star = dist_mid[star_side].max() + 1e-12
+
+        depth_norm = np.zeros_like(y, dtype=np.float32)
+        depth_norm[port_side] = dist_mid[port_side] / max_port
+        depth_norm[star_side] = dist_mid[star_side] / max_star
+
+        # clamp tiny numerical overshoots
+        depth_norm = np.clip(depth_norm, 0.0, 1.0)
+
+        # ---------------------------------------------------------------------------
+        # 6)  bow → stern fraction U  (for the closest-point x)
+        # ---------------------------------------------------------------------------
+        # we can still use the vertex’s own x, since along the mid-line the
+        # closest-point and the vertex have very similar x;
+        # if you really need the x of the seed, you’d have to backtrack via
+        # dijkstra predecessors and look it up there.
+        x0, x1 = x[hull_vert_ids].min(), x[hull_vert_ids].max()
+        U_all  = (x - x0) / (x1 - x0)               # in [0,1] for all verts
+
+        # ---------------------------------------------------------------------------
+        # 7)  signed V centred at 0.5, guaranteed 0 … 1
+        # ---------------------------------------------------------------------------
+        V_all = 0.5 + 0.5 * np.sign(y) * depth_norm
+
+        # any unreachable verts stay at sentinel (-1, -1)
+        bad = ~np.isfinite(dist_mid)
+        V_all[bad] = -1.0
+        U_all[bad] = -1.0
+
+        print(bad.sum(), "hull vertices are unreachable; setting UV to (-1, -1)")
+
+        # ---------------------------------------------------------------------------
+        # 8)  assemble st0, initialise as (-1, -1) for *non-hull* verts
+        # ---------------------------------------------------------------------------
+        st0 = np.full((Nh_tot, 2), -1.0, dtype=np.float32)
+        st0[hull_vert_ids, 0] = U_all[hull_vert_ids]
+        st0[hull_vert_ids, 1] = V_all[hull_vert_ids]
+        
+        st1, st2 = None, None
+        if bit_AddDeckLid:
+            st1 = np.full_like(st0, -1.0)
+            deck_verts = np.unique(TriIdx[hullTriangles + transomTriangles:])        # vertex id’s used by lid
+            x_min, x_max = verts_unique[deck_verts, 0].min(), verts_unique[deck_verts, 0].max()
+            y_min, y_max = verts_unique[deck_verts, 1].min(), verts_unique[deck_verts, 1].max()
+            st1[deck_verts, 0] = (verts_unique[deck_verts, 0] - x_min) / (x_max - x_min)
+            st1[deck_verts, 1] = (verts_unique[deck_verts, 1] - y_min) / (y_max - y_min)
+
+            # ---------------------------------------------------------------------------
+            #  E)  UV SET 2  (st2)  —  planar map for the transom
+            # ---------------------------------------------------------------------------
+            st2 = np.full_like(st0, -1.0)
+            transom_v = np.unique(TriIdx[hullTriangles:hullTriangles + transomTriangles])
+            y_min, y_max = verts_unique[transom_v, 1].min(), verts_unique[transom_v, 1].max()
+            z_min, z_max = verts_unique[transom_v, 2].min(), verts_unique[transom_v, 2].max()
+            st2[transom_v, 0] = (verts_unique[transom_v, 1] - y_min) / (y_max - y_min)
+            st2[transom_v, 1] = (verts_unique[transom_v, 2] - z_min) / (z_max - z_min)
+            
+        print(st0.shape, "UV set 0 generated for", len(hull_vert_ids), "hull vertices")
+            # print min and max of st0
+        print("UV set 0: min =", st0.min(axis=0), ", max =", st0.max(axis=0))
+        if np.isnan(st0).any():
+            raise RuntimeError("UV set 0 contains NaN values")
+
+        return st0, st1, st2, verts_unique, TriIdx, hull_vert_ids
+
+
+        
         
     def create_UVs(self, HULL, hullTriangles, bit_AddDeckLid, transomTriangles, numTriangles):
         """
@@ -1948,11 +2114,7 @@ class Hull_Parameterization:
         # r  = np.sqrt((verts_unique[:, 1] / Bhalf) ** 2 + (verts_unique[:, 2] / D) ** 2)
         # V0 = 0.5 + 0.5 * np.sign(verts_unique[:, 1]) * r
         # st0 = np.stack([U0, V0], axis=1).astype(np.float32)        # (N,2)
-
-        # import numpy as np
-        # import scipy.sparse as sp
-        # from scipy.sparse.csgraph import dijkstra
-
+        
         # ---------------------------------------------------------------------------
         #  D)  UV SET 1  (st1)  —  simple planar map for the deck lid
         # ---------------------------------------------------------------------------
@@ -2229,16 +2391,14 @@ class Hull_Parameterization:
         if return_uv:
             
             # st0, *_ = self.create_UVs(HULL, hullTriangles, transomTriangles, numTriangles)
-            st0, st1, st2, verts_unique, TriIdx, hull_verts, port_seeds, star_seeds = self.create_UVs(HULL, hullTriangles, bit_AddDeckLid, transomTriangles, numTriangles)
-            write_obj_with_uv(namepath, HULL.vectors, st0[TriIdx[:hullTriangles]])
+            # st0, st1, st2, verts_unique, TriIdx, hull_verts, port_seeds, star_seeds = self.create_UVs(HULL, hullTriangles, bit_AddDeckLid, transomTriangles, numTriangles)
+            st0, st1, st2, verts_unique, TriIdx, hull_verts = self.create_UV_midline(HULL, hullTriangles, bit_AddDeckLid, transomTriangles, numTriangles)
+            # write_obj_with_uv(namepath, HULL.vectors, st0[TriIdx[:hullTriangles]])
             
-            
-            
-
                     
         HULL.save(namepath + '.stl')
                 
-        return st0[TriIdx[:hullTriangles]]#, st1[TriIdx[hullTriangles:]], st2[TriIdx[hullTriangles + transomTriangles:]], verts_unique, TriIdx, hull_verts, port_seeds, star_seeds, HULL
+        return st0[TriIdx[:hullTriangles]] if return_uv else None#, st1[TriIdx[hullTriangles:]], st2[TriIdx[hullTriangles + transomTriangles:]], verts_unique, TriIdx, hull_verts, port_seeds, star_seeds, HULL
     
  
     def gen_USD(self, NUM_WL = 50, PointsPerWL = 300, bit_AddTransom = 1, bit_AddDeckLid = 0, bit_RefineBowAndStern = 0, namepath = 'Hull_Mesh', require_convex=False):

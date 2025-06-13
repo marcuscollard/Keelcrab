@@ -1,48 +1,71 @@
 import sys
 import os
 import tempfile
+import csv
+from pathlib import Path
+
 import numpy as np
-from PyQt5 import QtWidgets, QtCore, QtGui
+from PyQt5 import QtCore, QtGui, QtWidgets
 import pyvista as pv
 from pyvistaqt import QtInteractor
-from PIL import Image
 
+# -----------------------------------------------------------------------------
+#  3rd‑party ShipD geometry engine
+# -----------------------------------------------------------------------------
 from HullParameterization import Hull_Parameterization as HP
 
+# -----------------------------------------------------------------------------
+#  Where custom parameter sets are persisted            ~/ShipD/custom_hulls.csv
+# -----------------------------------------------------------------------------
+SAVE_PATH = Path.home() / "ShipD" / "custom_hulls.csv"
+
+
 class HullViewer(QtWidgets.QMainWindow):
-    def __init__(self, vectors=None):
+    """Interactive 3‑D viewer for ShipD hulls with numeric parameter editing,
+    optional UV layout preview and one‑click CSV persistence (Ctrl+S).
+    """
+
+    # ------------------------------------------------------------------
+    #  Constructor
+    # ------------------------------------------------------------------
+    def __init__(self, vectors: np.ndarray | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Live Hull Viewer")
-        self.resize(1200, 800)
+        self.resize(1280, 800)
 
-        dataset_num = 4
-        datasets = ['Constrained_Randomized_Set_1', 'Constrained_Randomized_Set_2', 'Constrained_Randomized_Set_3', 
-                    "Diffusion_Aug_Set_1", "Diffusion_Aug_Set_2"]
-        
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_path = os.path.join(
-            script_dir,
-            'Ship_D_Dataset',
-            datasets[dataset_num-1],
-            'Input_Vectors.csv'
+        # ------------------------------------------------------------------
+        # 1)  Load / infer parameter vectors
+        # ------------------------------------------------------------------
+        dataset_num = 4  # choose which of the demo CSVs to preload (1‑based)
+        datasets = [
+            "Constrained_Randomized_Set_1",
+            "Constrained_Randomized_Set_2",
+            "Constrained_Randomized_Set_3",
+            "Diffusion_Aug_Set_1",
+            "Diffusion_Aug_Set_2",
+        ]
+        csv_path = (
+            Path(__file__).resolve().parent
+            / "Ship_D_Dataset"
+            / datasets[dataset_num - 1]
+            / "Input_Vectors.csv"
         )
-        if vectors is None and os.path.isfile(csv_path):
+
+        if vectors is not None:
+            self.vectors: np.ndarray = np.asarray(vectors, dtype=float)
+        elif csv_path.is_file():
             try:
-                self.vectors = np.loadtxt(csv_path, delimiter=",", skiprows=1, dtype=np.float64)
-            except Exception as e:
-                print(f"Failed to load vectors: {e}")
+                self.vectors = np.loadtxt(csv_path, delimiter=",", skiprows=1, dtype=float)
+            except Exception:
                 self.vectors = np.empty((0,))
-        elif vectors is not None:
-            self.vectors = np.array(vectors)
         else:
             self.vectors = np.empty((0,))
 
-        # Prepare index and initial params
         self.current_idx = 0
         if self.vectors.ndim == 2 and self.vectors.shape[0] > 0:
-            self.params = list(self.vectors[self.current_idx])
+            self.params: list[float] = list(self.vectors[self.current_idx])
         else:
-            # fallback to single vector inference
+            # Determine the required parameter length by probing HP
             length = 0
             while True:
                 try:
@@ -52,20 +75,68 @@ class HullViewer(QtWidgets.QMainWindow):
                     break
             self.params = [0.5] * length
 
-        # 3D viewport
+        # ------------------------------------------------------------------
+        # 2)  Texture / UV settings
+        # ------------------------------------------------------------------
+        self.texture_height = 200
+        self.texture_width = 3 * self.texture_height  # 6:1 aspect ratio
+        self.num_stripes = 10
+        self.compute_uv = True  # toggled via View‑menu
+
+        # ------------------------------------------------------------------
+        # 3)  3‑D viewport (central widget)
+        # ------------------------------------------------------------------
         self.frame = QtWidgets.QFrame()
-        self.vlayout = QtWidgets.QVBoxLayout(self.frame)
+        self._vlayout = QtWidgets.QVBoxLayout(self.frame)
         self.plotter = QtInteractor(self.frame)
-        self.vlayout.addWidget(self.plotter.interactor)
+        self._vlayout.addWidget(self.plotter.interactor)
         self.setCentralWidget(self.frame)
 
-        # Dock: navigation + parameters
-        dock = QtWidgets.QDockWidget("Hull Controls", self)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+        # ------------------------------------------------------------------
+        # 4)  Pattern preview below the viewport
+        # ------------------------------------------------------------------
+        self.pattern_selector = QtWidgets.QComboBox()
+        self.pattern_selector.addItems(
+            ["Horizontal", "Vertical", "45° Diagonal", "135° Diagonal"]
+        )
+        self.pattern_selector.currentIndexChanged.connect(self.update_texture)
+        self._vlayout.addWidget(self.pattern_selector)
+
+        self.stripe_scene = QtWidgets.QGraphicsScene()
+        self.stripe_view = QtWidgets.QGraphicsView(self.stripe_scene)
+        self.stripe_view.setFixedSize(self.texture_width, self.texture_height)
+        self._vlayout.addWidget(self.stripe_view)
+
+        # ------------------------------------------------------------------
+        # 5)  UV layout dock (detachable)
+        # ------------------------------------------------------------------
+        self.uv_dock = QtWidgets.QDockWidget("UV Layout", self)
+        self.uv_view = QtWidgets.QLabel(alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.uv_view.setMinimumSize(400, 400)
+        self.uv_dock.setWidget(self.uv_view)
+        self.uv_dock.setAllowedAreas(QtCore.Qt.AllDockWidgetAreas)
+        self.uv_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+        )
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.uv_dock)
+
+        view_menu = self.menuBar().addMenu("View")
+        self.action_show_uv = QtWidgets.QAction(
+            "Show UV", self, checkable=True, checked=True
+        )
+        self.action_show_uv.triggered.connect(self.toggle_uv)
+        view_menu.addAction(self.action_show_uv)
+
+        # ------------------------------------------------------------------
+        # 6)  Navigation & parameter controls dock
+        # ------------------------------------------------------------------
+        ctrl_dock = QtWidgets.QDockWidget("Hull Controls", self)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, ctrl_dock)
         container = QtWidgets.QWidget()
         vbox = QtWidgets.QVBoxLayout(container)
 
-        # Navigation arrows
+        # Navigation buttons -------------------------------------------------
         nav = QtWidgets.QHBoxLayout()
         btn_prev = QtWidgets.QPushButton("← Prev")
         btn_next = QtWidgets.QPushButton("Next →")
@@ -76,174 +147,195 @@ class HullViewer(QtWidgets.QMainWindow):
         nav.addWidget(btn_next)
         vbox.addLayout(nav)
 
-        # Parameter entry with scrollbar
+        # Parameter editor (scrollable) -------------------------------------
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(300)
-        params_widget = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(params_widget)
-        scroll.setWidget(params_widget)
+        scroll.setMaximumHeight(320)
+        form_container = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(form_container)
+        scroll.setWidget(form_container)
         vbox.addWidget(scroll)
 
-        # Line edits per parameter
-        self.lineedits = []
+        # Numeric editors ----------------------------------------------------
+        self.spins: list[QtWidgets.QDoubleSpinBox] = []
         for idx, val in enumerate(self.params):
-            le = QtWidgets.QLineEdit(f"{val}")
-            le.setValidator(QtGui.QDoubleValidator())
-            le.editingFinished.connect(self._make_updater(idx, le))
-            form.addRow(f"Param {idx+1}", le)
-            self.lineedits.append(le)
+            spin = QtWidgets.QDoubleSpinBox(buttonSymbols=QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
+            spin.setDecimals(6)
+            spin.setRange(-1e6, 1e6)
+            spin.setSingleStep(0.001)
+            spin.setValue(val)
+            spin.valueChanged.connect(self._make_spin_updater(idx))
+            form.addRow(f"Param {idx + 1}", spin)
+            self.spins.append(spin)
 
-        dock.setWidget(container)
+        # Save button --------------------------------------------------------
+        save_btn = QtWidgets.QPushButton("Save")
+        save_btn.setShortcut("Ctrl+S")
+        save_btn.clicked.connect(self._save_csv)
+        vbox.addWidget(save_btn)
 
-        # Initial actor
+        ctrl_dock.setWidget(container)
+
+        # ------------------------------------------------------------------
+        # 7)  Initial hull render
+        # ------------------------------------------------------------------
         self.mesh_actor = None
         self.update_hull()
 
-    def _make_updater(self, idx, widget):
-        def callback():
-            try:
-                self.params[idx] = float(widget.text())
-                self.update_hull()
-            except ValueError:
-                widget.setText(f"{self.params[idx]}")
-        return callback
+    # ------------------------------------------------------------------
+    #  Helpers
+    # ------------------------------------------------------------------
+    def _make_spin_updater(self, idx: int):
+        def cb(val: float) -> None:
+            self.params[idx] = float(val)
+            self.update_hull()
 
-    def show_prev(self):
+        return cb
+
+    # ------------------------------------------------------------------
+    #  CSV persistence
+    # ------------------------------------------------------------------
+    def _save_csv(self) -> None:
+        """Append the current parameter vector to ``SAVE_PATH``.
+        Creates directory / header row automatically on first run.
+        """
+        SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        header = [f"Param {i + 1}" for i in range(len(self.params))]
+        need_header = not SAVE_PATH.exists() or SAVE_PATH.stat().st_size == 0
+        with SAVE_PATH.open("a", newline="") as fp:
+            writer = csv.writer(fp)
+            if need_header:
+                writer.writerow(header)
+            writer.writerow(self.params)
+        QtWidgets.QMessageBox.information(
+            self,
+            "Parameters saved",
+            f"Appended hull parameters to\n{SAVE_PATH}",
+        )
+
+    # ------------------------------------------------------------------
+    #  Navigation among pre‑loaded vectors
+    # ------------------------------------------------------------------
+    def show_prev(self) -> None:
         if self.vectors.ndim == 2 and self.vectors.shape[0] > 1:
             self.current_idx = (self.current_idx - 1) % self.vectors.shape[0]
             self.load_current_vector()
 
-    def show_next(self):
+    def show_next(self) -> None:
         if self.vectors.ndim == 2 and self.vectors.shape[0] > 1:
             self.current_idx = (self.current_idx + 1) % self.vectors.shape[0]
             self.load_current_vector()
 
-    def load_current_vector(self):
-        vec = list(self.vectors[self.current_idx])
-        self.params = vec
-        for idx, le in enumerate(self.lineedits):
-            le.setText(f"{self.params[idx]}")
+    def load_current_vector(self) -> None:
+        self.params = list(self.vectors[self.current_idx])
+        for idx, spin in enumerate(self.spins):
+            spin.blockSignals(True)
+            spin.setValue(self.params[idx])
+            spin.blockSignals(False)
         self.update_hull()
 
-    def update_hull(self):
+    # ------------------------------------------------------------------
+    #  UV toggle
+    # ------------------------------------------------------------------
+    def toggle_uv(self, checked: bool) -> None:
+        self.compute_uv = checked
+        self.uv_dock.setVisible(checked)
+        self.pattern_selector.setEnabled(checked)
+        self.update_hull()
+
+    # ------------------------------------------------------------------
+    #  Hull regeneration / rendering
+    # ------------------------------------------------------------------
+    def update_hull(self) -> None:
+        """Regenerate STL, display mesh and refresh texture preview."""
+        # 1) Geometry export via ShipD
+        temp_base = str(Path(tempfile.gettempdir()) / "hull_view")
         hull = HP(self.params)
-        base = os.path.join(tempfile.gettempdir(), 'hull_view')
-        st0 = hull.gen_stl(
-            return_uv=True,
+        _ = hull.gen_stl(
+            return_uv=self.compute_uv,  # bool
             NUM_WL=50,
             PointsPerWL=300,
             bit_AddTransom=0,
             bit_AddDeckLid=0,
-            bit_RefineBowAndStern=0,
-            namepath=base
+            bit_RefineBowAndStern=1,
+            namepath=temp_base,
         )
-        stl_file = base + '.stl'
-        if not os.path.isfile(stl_file):
+        stl_file = temp_base + ".stl"
+        if not Path(stl_file).is_file():
             print(f"STL generation failed: {stl_file} not found")
             return
-        pv_mesh = pv.read(stl_file)
-        
-       # Get face connectivity (VTK stores faces as [3, i0, i1, i2, 3, i3, i4, i5, ...])
-        faces = pv_mesh.faces.reshape(-1, 4)[:, 1:]  # shape (n_faces, 3)
 
-        # Recover the vertex positions of each face corner
-        verts = pv_mesh.points[faces]               # shape (n_faces, 3, 3)
-        flat_vertices = verts.reshape(-1, 3)        # shape (n_faces * 3, 3)
-
-        print(st0.shape)
-
-        uvs = st0.reshape(-1, 2)  # Now shape is (163284, 2)
-
-        # Double-check UV match
-        n_faces = pv_mesh.n_faces
-        assert uvs.shape[0] == n_faces * 3, f"Mismatch: {uvs.shape[0]} vs {n_faces * 3}"
-
-        # Create face array: each triangle is [3, i, i+1, i+2]
-        flat_faces = np.hstack([[3, i, i+1, i+2] for i in range(0, len(flat_vertices), 3)])
-
-        # Build expanded mesh
-        expanded_mesh = pv.PolyData(flat_vertices, flat_faces)
-        expanded_mesh.point_data["Texture Coordinates"] = uvs
-        expanded_mesh.active_texture_coordinates = uvs
-        
-        print("Expanded mesh n_points:", expanded_mesh.n_points)
-        print("UVs shape:", uvs.shape)
-        print("'Texture Coordinates' in point_data?", "Texture Coordinates" in expanded_mesh.point_data)
-        
-        # Define size
-        height = 200
-        width = 3 * height  # 6:1 aspect ratio
-
-        # Create a UV grid
-        uv_map = np.zeros((height, width, 3), dtype=np.uint8)
-
-        # Fill with horizontal gradient (R), vertical gradient (G), and a diagonal line (B)
-        for y in range(height):
-            for x in range(width):
-                uv_map[y, x, 0] = int(255 * x / width)      # Red: horizontal gradient
-                uv_map[y, x, 1] = int(255 * y / height)     # Green: vertical gradient
-                uv_map[y, x, 2] = int(255 * ((x + y) % 20 < 10))  # Blue: checker line
-
-        # Save image
-        img = Image.fromarray(uv_map)
-        img.save("uv_texture_6x1.png")
-        print('image saved as uv_texture_6x1.png')
-        
-        texture = pv.read_texture("uv_texture_6x1.png")
-        texture.repeat = False         # no wrap
-        texture.edge_clamp = True      # clamp to border
-
-        if self.mesh_actor is None:
-            self.mesh_actor = self.plotter.add_mesh(expanded_mesh, show_edges=False, texture=texture)
+        # 2) Display mesh (replace old actor)
+        mesh = pv.read(stl_file)
+        if self.mesh_actor:
+            self.plotter.remove_actor(self.mesh_actor)
+        self.mesh_actor = self.plotter.add_mesh(mesh, color="#cccccc", smooth_shading=True)
+        if not self.plotter.camera_set:
             self.plotter.reset_camera()
-        else:
-            self.mesh_actor.mapper.SetInputData(expanded_mesh)
-        print("rendering hull with parameters:")
         self.plotter.render()
-        
-        import matplotlib.pyplot as plt
 
-        # st: your UV array, shape (n_faces, 3, 2)
-        # e.g. st = np.load(...)
+        # 3) Refresh texture / preview widgets
+        self.update_texture()
 
-        fig, ax = plt.subplots(figsize=(6,6))
+    # ------------------------------------------------------------------
+    #  Texture generation & preview
+    # ------------------------------------------------------------------
+    def update_texture(self) -> None:
+        """Create a numpy stripe pattern and show it in the GraphicsScene."""
+        idx = self.pattern_selector.currentIndex()
+        h, w, n = self.texture_height, self.texture_width, self.num_stripes
+        stripe_w = max(1, w // (2 * n))
+        arr = np.zeros((h, w, 3), dtype=np.uint8)
 
-        # draw the triangle outlines
-        for tri in st0:
-            # close the loop by appending the first corner again
-            loop = np.vstack([tri, tri[0]])
-            ax.plot(loop[:, 0], loop[:, 1], linewidth=0.5, alpha=0.7)
+        if idx == 0:  # Horizontal
+            for y in range(h):
+                if (y // stripe_w) % 2 == 0:
+                    arr[y, :, :] = 255
+        elif idx == 1:  # Vertical
+            for x in range(w):
+                if (x // stripe_w) % 2 == 0:
+                    arr[:, x, :] = 255
+        elif idx == 2:  # 45° diagonal (\)
+            for y in range(h):
+                for x in range(w):
+                    if (((x + y) // stripe_w) % 2) == 0:
+                        arr[y, x, :] = 255
+        elif idx == 3:  # 135° diagonal (/)
+            for y in range(h):
+                for x in range(w):
+                    if (((x - y) // stripe_w) % 2) == 0:
+                        arr[y, x, :] = 255
 
-        # scatter the UV corner points
-        uv_pts = st0.reshape(-1, 2)
-        ax.scatter(uv_pts[:, 0], uv_pts[:, 1], s=1)
+        # Update the QGraphicsScene
+        self.stripe_scene.clear()
+        img = QtGui.QImage(
+            arr.data, w, h, 3 * w, QtGui.QImage.Format.Format_RGB888
+        )
+        pix = QtGui.QPixmap.fromImage(img)
+        self.stripe_scene.addPixmap(pix)
+        self.stripe_scene.setSceneRect(0, 0, w, h)
 
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.set_aspect('equal', 'box')
-        ax.set_xlabel('U')
-        ax.set_ylabel('V')
-        ax.set_title('UV Layout in Texture Domain')
-        plt.tight_layout()
-        plt.show()
+        # UV dock preview (optional): reuse same pixmap
+        if self.compute_uv:
+            self.uv_view.setPixmap(pix.scaled(
+                self.uv_view.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation
+            ))
+        else:
+            self.uv_view.clear()
 
-    
-
-        # # tris_uv_pix: your (n_tris, 3, 2) array *in pixel coords* (u from 0→UV_W, v from 0→UV_H)
-        # feature_mask = dummy_feature_mask(tris_uv_pix, (width, height))
-
-        # pm = uv_pixmap((UV_W, UV_H), tris_uv_pix, feature_mask)
-
-        # self.uv_scene.clear()
-        # self.uv_scene.addPixmap(pm)
-        # self.uv_scene.setSceneRect(0, 0, UV_W, UV_H)
+    # ------------------------------------------------------------------
+    #  Qt entry point helper
+    # ------------------------------------------------------------------
+    @staticmethod
+    def launch(vectors: np.ndarray | None = None) -> None:
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+        viewer = HullViewer(vectors)
+        viewer.show()
+        sys.exit(app.exec())
 
 
-
-
+# -----------------------------------------------------------------------------
+#  Script entry point ----------------------------------------------------------
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv)
-    viewer = HullViewer()
-    viewer.show()
-    sys.exit(app.exec_())
+    HullViewer.launch()
