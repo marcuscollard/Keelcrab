@@ -23,6 +23,68 @@ class ShaderManager:
     MAT_PATH  = "/hooks/hull_dyna"
     # ----------------------------------------------------------------------
     
+    @staticmethod
+    def make_dynamic_hull(
+            stage: Usd.Stage,
+            prim_path,                  # str | list[str]
+            idx,
+            *,
+            tex_name="live_hull",
+            tex_rgba=None,
+            size=(50, 300),              # (H, W)
+            mdl_path=MDL_PATH,
+            uv_set_index=0               # 0 = primvar:st
+        ):
+        # ---- normalise input --------------------------------------------------
+        if isinstance(prim_path, str):
+            prim_paths = [prim_path]
+
+        # ---- dynamic texture --------------------------------------------------
+        H, W = size
+        if tex_rgba is None:
+            tex_rgba = np.full((H, W, 4), [0, 255, 0, 255], np.uint8)
+            
+        tex_name = tex_name + str(idx)
+
+        provider = ui.DynamicTextureProvider(tex_name)
+        provider.set_data_array(tex_rgba, list(tex_rgba.shape))  # (H, W, 4)
+
+        # ---- material & shader ------------------------------------------------
+        mat_path = f"/World/Materials/{tex_name}"
+        shd_path = f"{mat_path}/OmniPBR"
+
+        mat = UsdShade.Material.Define(stage, mat_path)
+        shd = UsdShade.Shader.Define(stage, shd_path)
+        shd.CreateIdAttr("OmniPBR")
+
+        shd.CreateImplementationSourceAttr(UsdShade.Tokens.sourceAsset)
+        shd.SetSourceAsset(Sdf.AssetPath(mdl_path), "mdl")
+        shd.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+
+        shd.CreateInput("diffuse_texture_st_index",
+                        Sdf.ValueTypeNames.Int).Set(uv_set_index)
+        shd.CreateInput("diffuse_texture",
+                        Sdf.ValueTypeNames.Asset).Set(
+                            Sdf.AssetPath(f"dynamic://{tex_name}"))
+
+        surf = shd.CreateOutput("surface",      Sdf.ValueTypeNames.Token)
+        vol  = shd.CreateOutput("volume",       Sdf.ValueTypeNames.Token)
+        disp = shd.CreateOutput("displacement", Sdf.ValueTypeNames.Token)
+
+        mat.CreateSurfaceOutput().ConnectToSource(surf)
+        mat.CreateVolumeOutput().ConnectToSource(vol)
+        mat.CreateDisplacementOutput().ConnectToSource(disp)
+
+        # ---- bind to meshes ---------------------------------------------------
+
+        prim = stage.GetPrimAtPath(prim_path)
+        UsdShade.MaterialBindingAPI(prim).Bind(mat)
+
+        print(f"✅  Bound dynamic://{tex_name} (UV set {uv_set_index}) "
+            f"to {len(prim_paths)} prim(s)")
+
+        return provider        # keep this alive!
+
 
     @staticmethod
     def create_dynamic_hull(

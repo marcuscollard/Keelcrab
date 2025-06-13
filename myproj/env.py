@@ -510,9 +510,11 @@ def main(cfg: DictConfig):
     #    will live under /World/envs/env_0/hull, /World/envs/env_1/hull, …
     hull_paths = [f"/World/envs/env_{i}/hull" for i in range(scene_cfg.num_envs)]
 
-    # 3. Create the provider + material and bind it to those prims.
-    provider = ShaderManager.create_dynamic_material(stage=scene.stage, prim_paths=hull_paths)
-
+    # 3. Create the provider + material and bind it to those prims
+    providers = []
+    for idx in range(scene_cfg.num_envs):
+        provider = ShaderManager.make_dynamic_hull(stage=scene.stage, prim_path=hull_paths[idx], idx=idx)
+        providers.append(provider)
 
     with Timer("[INFO] Time to randomize scene: "):
         # DO YOUR OWN OTHER KIND OF RANDOMIZATION HERE!
