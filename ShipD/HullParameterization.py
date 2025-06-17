@@ -2465,7 +2465,7 @@ class Hull_Parameterization:
 
         def _point_in_poly_inclusive(pt, poly):
             """
-            Ray‐cast test: returns True if pt is strictly inside poly 
+            Ray-cast test: returns True if pt is strictly inside poly 
             or lies exactly on any edge.
             """
             x, y = pt
