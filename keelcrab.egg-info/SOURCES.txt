@@ -2,6 +2,11 @@ README.md
 pyproject.toml
 IsaacSim/__init__.py
 IsaacSim/dynamic_render.py
+PlotNeuralNet/pycore/__init__.py
+PlotNeuralNet/pycore/blocks.py
+PlotNeuralNet/pycore/tikzeng.py
+PlotNeuralNet/pyexamples/test_simple.py
+PlotNeuralNet/pyexamples/unet.py
 RL/__init__.py
 ShipD/Gaussian_Curvature.py
 ShipD/HullParameterization.py

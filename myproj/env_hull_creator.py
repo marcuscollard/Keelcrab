@@ -13,6 +13,25 @@ from ShipD.HullParameterization import Hull_Parameterization as HP
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
+from isaaclab.app import AppLauncher
+import argparse
+
+# Optional CLI args
+parser = argparse.ArgumentParser()
+AppLauncher.add_app_launcher_args(parser)
+# 4. Override default values BEFORE parsing
+default_args = [
+    "--headless"
+]
+
+args = parser.parse_args(default_args)
+
+
+args = parser.parse_args()
+
+# Launch Isaac Sim headlessly and without UI
+app_launcher = AppLauncher(args)
+simulation_app = app_launcher.app
 
 
 def create_hulls(cfg: DictConfig):

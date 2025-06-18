@@ -219,7 +219,7 @@ class SceneCfgOverride(InteractiveSceneCfg):
             collision_props=sim_schemas.CollisionPropertiesCfg()
         ),
         init_state=AssetBaseCfg.InitialStateCfg(
-            pos=[0.0, 0.0, 10.0],
+            pos=[0.0, 0.0, 4.0],
             rot=[1.0, 0.0, 0.0, 0.0]  #[0.7071, 0.0, 0.0, 0.7071],
         ),
     )
