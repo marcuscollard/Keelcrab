@@ -64,6 +64,11 @@ from isaaclab.utils import Timer, configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 JACKAL_PATH = "/home/ubuntu/Desktop/jackal_basic.usd"
 
+# dynamic texture constants
+TEXTURE_SIZE = (200, 600)  # (height, width) used by ShaderManager
+GREEN_RGBA = np.array([0, 255, 0, 255], dtype=np.uint8)
+WHITE_RGBA = np.array([255, 255, 255, 255], dtype=np.uint8)
+
 
 import omni.usd
 from pxr import Gf, Sdf, UsdGeom, UsdShade
@@ -226,8 +231,52 @@ class SceneCfgOverride(InteractiveSceneCfg):
 
 
 
+def generate_stripe_texture(width, height, num_stripes, pattern_idx):
+    """
+    Generate a stripe texture as a NumPy RGBA array.
 
-def run_simulator(sim: SimulationContext, scene: InteractiveScene):
+    Parameters:
+        width (int): Width of the texture
+        height (int): Height of the texture
+        num_stripes (int): Number of stripes
+        pattern_idx (int): Pattern selector:
+            0 = horizontal
+            1 = vertical
+            2 = diagonal /
+            3 = diagonal \
+
+    Returns:
+        np.ndarray: Texture of shape (height, width, 4) dtype=uint8
+    """
+    u = np.linspace(0.0, 1.0, width, endpoint=False)
+    v = np.linspace(0.0, 1.0, height, endpoint=False)
+    uu, vv = np.meshgrid(u, v)
+
+    if pattern_idx == 0:
+        pattern = ((vv * num_stripes) % 1.0) < 0.5
+    elif pattern_idx == 1:
+        pattern = ((uu * num_stripes) % 1.0) < 0.5
+    elif pattern_idx == 2:
+        pattern = (((uu + vv) * num_stripes) % 1.0) < 0.5
+    else:
+        pattern = ((((uu - vv) * num_stripes) % 1.0 + 1.0) % 1.0) < 0.5
+
+    # Stripe in blue channel, UV info in R and G, full alpha
+    tex = np.zeros((height, width, 4), dtype=np.uint8)
+    tex[..., 0] = (uu * 255).astype(np.uint8)             # Red = U
+    tex[..., 1] = (vv * 255).astype(np.uint8)             # Green = V
+    tex[..., 2] = pattern.astype(np.uint8) * 255          # Blue = stripe
+    tex[..., 3] = 255                                     # Alpha = opaque
+
+    return tex
+
+
+
+def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
+    """Runs the simulation loop and updates dynamic textures."""
+    # local texture buffers mirroring the provider contents
+    textures = [np.full((*TEXTURE_SIZE, 4), GREEN_RGBA, dtype=np.uint8)
+                for _ in providers]
     """Runs the simulation loop."""
     # Extract scene entities
     # note: we only do this here for readability.
@@ -237,6 +286,15 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     #rigid = hull.rigid_objects['hull']
     
     sim_dt = sim.get_physics_dt()
+    
+    half_mask = np.zeros((TEXTURE_SIZE[0], TEXTURE_SIZE[1]), dtype=bool)
+    half_mask2 = np.zeros((TEXTURE_SIZE[0], TEXTURE_SIZE[1]), dtype=bool)
+    half_mask[:, :TEXTURE_SIZE[1] // 2 ] = True
+    half_mask2[:TEXTURE_SIZE[0] // 2 , :] = True
+    
+    stripes = generate_stripe_texture(
+        TEXTURE_SIZE[1], TEXTURE_SIZE[0], num_stripes=10, pattern_idx=0
+    )
 
     count = 0
     # Simulation loop
@@ -278,7 +336,30 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene):
         # Apply action to robot
         # robot.set_joint_position_target(robot.data.default_joint_pos)
 
-        
+        # if count % 20 == 0:
+        #     # Update dynamic textures
+        #     for tex, provider in zip(textures, providers):
+        #         mask = np.random.rand(TEXTURE_SIZE[0], TEXTURE_SIZE[1]) < 0.5
+        #         green_mask = np.all(tex == GREEN_RGBA, axis=2)
+        #         white_mask = np.all(tex == WHITE_RGBA, axis=2)
+        #         tex[np.logical_and(mask, green_mask)] = WHITE_RGBA
+        #         tex[np.logical_and(mask, white_mask)] = GREEN_RGBA
+        #         provider.set_data_array(tex, list(tex.shape))
+                
+        if count % 60 == 0:
+            for tex, provider in zip(textures, providers):
+                tex = generate_stripe_texture(
+                    TEXTURE_SIZE[1], TEXTURE_SIZE[0], num_stripes=1000, pattern_idx=(count // 60) % 4
+                )
+
+                # green_mask = np.all(tex == GREEN_RGBA, axis=2)
+                # white_mask = np.all(tex == WHITE_RGBA, axis=2)
+                # tex[np.logical_and(half_mask, green_mask)] = WHITE_RGBA
+                # tex[np.logical_and(half_mask, white_mask)] = GREEN_RGBA
+                # tex[np.logical_and(half_mask2, green_mask)] = WHITE_RGBA
+                # tex[np.logical_and(half_mask2, white_mask)] = GREEN_RGBA
+                provider.set_data_array(tex, list(tex.shape))
+
 
         # Write data to sim
         scene.write_data_to_sim()
@@ -368,7 +449,7 @@ def main(cfg: DictConfig):
     # Now we are ready!
     print("[INFO]: Setup complete...")
 
-    run_simulator(sim, scene)
+    run_simulator(sim, scene, providers)
 
     # Simulate physics
     while simulation_app.is_running():

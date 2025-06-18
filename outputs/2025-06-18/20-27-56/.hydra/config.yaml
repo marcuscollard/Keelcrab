@@ -1,0 +1,6 @@
+ships:
+  dataset_index: 6
+  filepath: ship_assets/data_${ships.dataset_index}.csv
+  limit: null
+random:
+  seed: 42

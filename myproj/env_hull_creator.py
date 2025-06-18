@@ -65,13 +65,13 @@ def create_hulls(cfg: DictConfig):
     vecs = list(vectors[chosen_indices])
     for i, vec in enumerate(vecs):
         hull = HP(vec)
-        base = os.path.join("myproj/temp/", f'hull_{i}')
+        base = os.path.join(SCRIPT_DIR, "temp/", f'hull_{i}')
         hull.gen_USD(
             NUM_WL=50,
             PointsPerWL=300,
             bit_AddTransom=1,
             bit_AddDeckLid=1,
-            bit_RefineBowAndStern=0,
+            bit_RefineBowAndStern=1,
             namepath=base
         )
         usd_file = base + '.usd'

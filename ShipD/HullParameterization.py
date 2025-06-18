@@ -1913,12 +1913,22 @@ class Hull_Parameterization:
             st2[transom_v, 0] = (verts_unique[transom_v, 1] - y_min) / (y_max - y_min)
             st2[transom_v, 1] = (verts_unique[transom_v, 2] - z_min) / (z_max - z_min)
             
+            st1 = st1[TriIdx[hullTriangles:hullTriangles + transomTriangles]]
+            st2 = st2[TriIdx[hullTriangles + transomTriangles:]]
+            
         print(st0.shape, "UV set 0 generated for", len(hull_vert_ids), "hull vertices")
             # print min and max of st0
         print("UV set 0: min =", st0.min(axis=0), ", max =", st0.max(axis=0))
         if np.isnan(st0).any():
             raise RuntimeError("UV set 0 contains NaN values")
 
+        st0 = st0[TriIdx[:hullTriangles]]  # restrict to the hull triangles only
+        print(st0.shape)
+        print(st1.shape if st1 is not None else "No deck lid UVs")
+        print(st2.shape if st2 is not None else "No transom UVs")
+        st0 = st0.reshape(-1, 2)
+        st1 = st1.reshape(-1, 2) if st1 is not None else None
+        st2 = st2.reshape(-1, 2) if st2 is not None else None  
         return st0, st1, st2, verts_unique, TriIdx, hull_vert_ids
 
 
@@ -2660,12 +2670,15 @@ class Hull_Parameterization:
         pvars = UsdGeom.PrimvarsAPI(sim_mesh)
 
         for name, data in zip(("st", "st1", "st2"), (st0, st1, st2)):
+            # if data is empty, skip creating the primvar
+            if data is None or len(data) == 0:
+                continue
             pv = pvars.CreatePrimvar(
                     name,
                     Sdf.ValueTypeNames.TexCoord2fArray,
                     UsdGeom.Tokens.faceVarying,
             )
-            pv.Set([Gf.Vec2f(float(u), float(v)) for u, v in data[TriIdx.reshape(-1)]])
+            pv.Set([Gf.Vec2f(float(u), float(v)) for u, v in data])
 
         # ---------------------------------------------------------------------------
         #  G)  FACE SUBSETS  (indices are *triangle* order)
@@ -2704,47 +2717,6 @@ class Hull_Parameterization:
                 tag_material_subset(subset)
                 tag_material_subset(subset)
 
-        # ---------------------------------------------------------------------------
-        #  H)  THREE CHECKER MATERIALS  (different UV set & scale)
-        # ---------------------------------------------------------------------------
-
-    
-        def make_checker(mat_path: str, uv_set_index: int, scale: float):
-            # ── material prim ─────────────────────────────────────────────────────
-            mtl = UsdShade.Material.Define(stage, mat_path)
-
-            # ── MDL checker shader ────────────────────────────────────────────────
-            chk = UsdShade.Shader.Define(stage, mat_path + "/Checker")
-            chk.CreateIdAttr("core_definitions::checkerboard")
-            chk.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(scale, scale))
-            chk.CreateInput("texture_coordinate_index", Sdf.ValueTypeNames.Int).Set(uv_set_index)
-            chk_out = chk.CreateOutput("out", Sdf.ValueTypeNames.Float3)     # colour output
-
-            # ── Preview-surface wrapper ───────────────────────────────────────────
-            pbs = UsdShade.Shader.Define(stage, mat_path + "/PreviewSurface")
-            pbs.CreateIdAttr("UsdPreviewSurface")
-
-            diff_col = pbs.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
-            diff_col.ConnectToSource(chk_out)                                 # <-- fixed
-
-            pbs_out = pbs.CreateOutput("surface", Sdf.ValueTypeNames.Token)
-
-            # ── hook the surface into the material ───────────────────────────────
-            mtl.CreateSurfaceOutput().ConnectToSource(pbs_out)
-            return mtl
-
-        # make_checker("/Hull/Looks/HullChecker",    0, 0.10)   # medium checks
-        # make_checker("/Hull/Looks/DeckChecker",    1, 0.25)   # smaller checks
-        # make_checker("/Hull/Looks/TransomChecker", 2, 0.05)   # large checks
-
-
-
-        # ---------------------------------------------------------------------------
-        #  I)  BIND MATERIALS TO SUBSETS
-        # ---------------------------------------------------------------------------
-        # UsdShade.MaterialBindingAPI(sub_hull).Bind(UsdShade.Material.Get(stage, "/Hull/Looks/HullChecker"))
-        # UsdShade.MaterialBindingAPI(sub_deck).Bind(UsdShade.Material.Get(stage, "/Hull/Looks/DeckChecker"))
-        # UsdShade.MaterialBindingAPI(sub_tran).Bind(UsdShade.Material.Get(stage, "/Hull/Looks/TransomChecker"))
 
         from pxr import UsdPhysics, PhysxSchema
 
