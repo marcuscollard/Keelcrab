@@ -82,124 +82,7 @@ from isaaclab.sim import schemas as sim_schemas, spawners as sim_spawners
 # from omni.isaac.lab.sim import SimulationContext
 # from omni.isaac.lab.assets import AssetBaseCfg
 
-# This defines one interactive scene, imported USD and physics from Isaac Lab
 
-def create_hulls(cfg: DictConfig):
-    #set random for numpy - do for torch too!
-    np.random.seed(cfg.random.seed)
-
-    # load the parameters csv
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    csv_path = os.path.join(SCRIPT_DIR, cfg.ships.filepath)
-
-    print(csv_path)
-
-    vectors = []
-
-    if os.path.isfile(csv_path):
-        try:
-            vectors = np.loadtxt(csv_path, delimiter=",", skiprows=1, dtype=np.float64)
-        except Exception as e:
-            print(f"Failed to load vectors: {e}")
-            vectors = np.empty((0,))
-    else:
-        print('not valid csv file')
-
-
-    # randomly select N
-    valid_indices = np.array([0,1,2,3])
-    chosen_indices = np.random.choice(np.arange(valid_indices.size), 
-                                      size=4, replace=False)
-    boat_hulls = []
-    vecs = list(vectors[chosen_indices])
-    for i, vec in enumerate(vecs):
-        hull = HP(vec)
-        base = os.path.join("myproj/temp/", f'hull_{i}')
-        hull.gen_USD(
-            NUM_WL=50,
-            PointsPerWL=300,
-            bit_AddTransom=1,
-            bit_AddDeckLid=1,
-            bit_RefineBowAndStern=0,
-            namepath=base
-        )
-        usd_file = base + '.usd'
-        if not os.path.isfile(usd_file):
-            print(f"USD generation failed: {usd_file} not found")
-            return
-
-
-
-def inject_USDs(cfg: DictConfig, prim_path_expr: str):
-
-    # acquire stage
-    stage = omni.usd.get_context().get_stage()
-    # resolve prim paths for spawning and cloning
-    prim_paths = sim_utils.find_matching_prim_paths(prim_path_expr)
-    num_envs = len(prim_paths)
-
-    mtl_path = Sdf.Path("/World/Looks/CheckerProc")
-    mtl      = UsdShade.Material.Define(stage, mtl_path)
-
-    # ➊ MDL “3-D checker” shader
-    checker  = UsdShade.Shader.Define(stage, mtl_path.AppendChild("Checker3D"))
-    checker.CreateImplementationSourceAttr(UsdShade.Tokens.sourceAsset)
-    checker.SetSourceAsset("core_definitions.mdl", "mdl")
-    checker.SetSourceAssetSubIdentifier("3d_checker_texture", "mdl")  # procedural pattern
-
-    # ➋ Plain UsdPreviewSurface that will read Color from the checker node
-    pbs      = UsdShade.Shader.Define(stage, mtl_path.AppendChild("PreviewSurface"))
-    pbs.CreateIdAttr("UsdPreviewSurface")
-    pbs.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)\
-       .ConnectToSource(checker.ConnectableAPI(), "color")
-
-    # ➌ Wire the preview shader into the material
-    mtl.CreateSurfaceOutput().ConnectToSource(pbs.ConnectableAPI(), "surface")
-        
-    # add them appropriately
-    with Sdf.ChangeBlock():
-        for prim_path in prim_paths:
-
-            # spawn single instance
-            prim_spec = Sdf.CreatePrimInLayer(stage.GetRootLayer(), prim_path)
-
-            # DO YOUR OWN OTHER KIND OF RANDOMIZATION HERE!
-            # Note: Just need to acquire the right attribute about the property you want to set
-            # Here is an example on setting color randomly
-            color_spec = prim_spec.GetAttributeAtPath(prim_path + "/geometry/material/Shader.inputs:diffuseColor")
-            color_spec.default = Gf.Vec3f(random.random(), random.random(), random.random())
-    
-    # apply some augmentations
-
-
-    # bind the textures + augment them
-    # create_texture(prim_path_expr)
-
-
-# def make_procedural_checker(mtl_path:str):
-#     mtl_path = Sdf.Path(mtl_path)
-#     mtl      = UsdShade.Material.Define(stage, mtl_path)
-
-#     # ➊ MDL “3-D checker” shader
-#     checker  = UsdShade.Shader.Define(stage, mtl_path.AppendChild("Checker3D"))
-#     checker.CreateImplementationSourceAttr(UsdShade.Tokens.sourceAsset)
-#     checker.SetSourceAsset("core_definitions.mdl", "mdl")
-#     checker.SetSourceAssetSubIdentifier("3d_checker_texture", "mdl")  # procedural pattern
-
-#     # ➋ Plain UsdPreviewSurface that will read Color from the checker node
-#     pbs      = UsdShade.Shader.Define(stage, mtl_path.AppendChild("PreviewSurface"))
-#     pbs.CreateIdAttr("UsdPreviewSurface")
-#     pbs.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)\
-#        .ConnectToSource(checker.ConnectableAPI(), "color")
-
-#     # ➌ Wire the preview shader into the material
-#     mtl.CreateSurfaceOutput().ConnectToSource(pbs.ConnectableAPI(), "surface")
-#     return mtl_path
-
-# make_procedural_checker("/World/Looks/CheckerProc")
-
-
-    
 
 def create_texture(prim_path_expr: str):
 
@@ -232,32 +115,6 @@ def create_texture(prim_path_expr: str):
         .Set(f"dynamic://{dyn_tex_name}")  # Link to our DynamicTextureProvider:contentReference[oaicite:2]{index=2}
 
     prim_paths = sim_utils.find_matching_prim_paths(prim_path_expr)
-    
-    # def get_file_from_index():
-    #     try:
-    #         self.params[idx] = float(widget.text())
-    #     except ValueError:
-    #     return callback
-
-    # def get_hull_USD():
-    #     hull = HP(self.params)
-    #     base = os.path.join(tempfile.gettempdir(), 'hull_view')
-    #     hull.gen_USD(
-    #         NUM_WL=50,
-    #         PointsPerWL=200,
-    #         bit_AddTransom=1,
-    #         bit_AddDeckLid=1,
-    #         bit_RefineBowAndStern=1,
-    #         namepath=base
-    #     )
-    #     stl_file = base + '.stl'
-    #     if not os.path.isfile(stl_file):
-    #         print(f"STL generation failed: {stl_file} not found")
-    #         return
-    #     usd_file = base + '.usd'
-    #     if not os.path.isfile(usd_file):
-    #         print(f"USD generation failed: {usd_file} not found")
-    #         return
 
 
     # manually clone prims if the source prim path is a regex expression
@@ -271,13 +128,14 @@ def create_texture(prim_path_expr: str):
             ground_prim = prim_spec  # path to the curved surface prim
             ground_prim.ApplyAPI(UsdShade.MaterialBindingAPI)           # ensure binding API is present
             UsdShade.MaterialBindingAPI(ground_prim).Bind(material)
-
-# 1) collect every USD in your folder (runs once, at import time)
+            
+            
+# 1) collect every USD in folder (runs at import time)
 # load the parameters csv
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 usd_path = os.path.join(SCRIPT_DIR, "temp/*.usd")
 HULL_BANK = glob.glob(usd_path)
-assert HULL_BANK, "No hull USDs found – check the folder path"
+assert HULL_BANK, "No hull USDs found - check the folder path"
 
 
 robot_config = ArticulationCfg(
@@ -367,23 +225,6 @@ class SceneCfgOverride(InteractiveSceneCfg):
     )
 
 
-    #     # Set Cube as object
-    # self.scene.object = RigidObjectCfg(
-    #     prim_path="{ENV_REGEX_NS}/Object",
-    #     init_state=RigidObjectCfg.InitialStateCfg(pos=[0.5, 0, 0.055], rot=[1, 0, 0, 0]),
-    #     spawn=UsdFileCfg(
-    #         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
-    #         scale=(0.8, 0.8, 0.8),
-    #         rigid_props=RigidBodyPropertiesCfg(
-    #             solver_position_iteration_count=16,
-    #             solver_velocity_iteration_count=1,
-    #             max_angular_velocity=1000.0,
-    #             max_linear_velocity=1000.0,
-    #             max_depenetration_velocity=5.0,
-    #             disable_gravity=False,
-    #         ),
-    #     ),
-    # )
 
 
 def run_simulator(sim: SimulationContext, scene: InteractiveScene):
@@ -521,7 +362,6 @@ def main(cfg: DictConfig):
         # Note: Just need to acquire the right attribute about the property you want to set
         # Here is an example on setting color randomly
         pass
-        #inject_USDs(cfg, scene_cfg.my_scene.prim_path)
 
     # Play the simulator
     sim.reset()

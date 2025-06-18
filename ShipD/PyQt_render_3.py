@@ -11,7 +11,7 @@ from pyvistaqt import QtInteractor
 
 from HullParameterization import Hull_Parameterization as HP
 
-SAVE_PATH = '/Users/marcuscollard/Desktop/KEELCRAB/Keelcrab/ShipD/Ship_D_Dataset/Custom_Datasets'
+SAVE_PATH = '/Users/marcuscollard/Desktop/KEELCRAB/Keelcrab/myproj/ship_assets'
 
 class HullViewer(QtWidgets.QMainWindow):
     """Interactive hull viewer with optional UV‑layout preview and detachable UI parts."""

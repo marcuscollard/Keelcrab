@@ -1,8 +1,8 @@
 
 
 ships:
-  dataset_index: 4
-  filepath: "ship_assets/data_${ships.dataset_index}.csv"
-
+  dataset_index: 6
+  filepath: 'ship_assets/data_${ships.dataset_index}.csv'
+  limit: null # or a number
 random:
   seed: 42

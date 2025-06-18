@@ -2191,7 +2191,7 @@ class Hull_Parameterization:
 
         def _point_in_poly_inclusive(pt, poly):
             """
-            Ray‐cast test: returns True if pt is strictly inside poly 
+            Ray-cast test: returns True if pt is strictly inside poly 
             or lies exactly on any edge.
             """
             x, y = pt
@@ -2636,8 +2636,7 @@ class Hull_Parameterization:
             
         print('Number of Triangles: ', numTriangles)
 
-        st0, st1, st2, verts_unique, TriIdx, hull_vert_ids, port_seeds, star_seeds = self.create_UVs(HULL, hullTriangles, transomTriangles, numTriangles)
-        
+        st0, st1, st2, verts_unique, TriIdx, hull_verts = self.create_UV_midline(HULL, hullTriangles, bit_AddDeckLid, transomTriangles, numTriangles)
         # ---------------------------------------------------------------------------
         #  F)  WRITE USD PRIM
         # ---------------------------------------------------------------------------
