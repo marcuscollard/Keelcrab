@@ -65,7 +65,7 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 JACKAL_PATH = "/home/ubuntu/Desktop/jackal_basic.usd"
 
 # dynamic texture constants
-TEXTURE_SIZE = (200, 600)  # (height, width) used by ShaderManager
+TEXTURE_SIZE = (1024, 1024)  # (height, width) used by ShaderManager
 GREEN_RGBA = np.array([0, 255, 0, 255], dtype=np.uint8)
 WHITE_RGBA = np.array([255, 255, 255, 255], dtype=np.uint8)
 
@@ -271,6 +271,27 @@ def generate_stripe_texture(width, height, num_stripes, pattern_idx):
     return tex
 
 
+def register_sensors(scene, sim):
+    # register one downward RayCaster per environment
+    sensors = {}
+    for env_id, env_path in enumerate(scene.env_prim_paths):
+        base_path = f"{env_path}/Robot/base/lidar_cage"
+        sensor = RayCaster(
+            RayCasterCfg(
+                prim_path       = base_path,
+                update_period   = 1.0 / 60,
+                offset          = RayCasterCfg.OffsetCfg(pos=(0, 0, 0.30)),
+                mesh_prim_paths = [f"{env_path}/hull"],
+                attach_yaw_only = True,
+                pattern_cfg     = patterns.GridPatternCfg(resolution=0.05,
+                                                        size=(0.8, 1.0)),
+            )
+        )
+        sim.add_sensor(sensor)
+        sensor.initialize()
+        sensors[env_id] = sensor
+
+
 
 def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
     """Runs the simulation loop and updates dynamic textures."""
@@ -283,9 +304,12 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
 
     hull = scene['hull']
 
+
     #rigid = hull.rigid_objects['hull']
     
     sim_dt = sim.get_physics_dt()
+    
+    sensors = register_sensors(scene, sim)
     
     half_mask = np.zeros((TEXTURE_SIZE[0], TEXTURE_SIZE[1]), dtype=bool)
     half_mask2 = np.zeros((TEXTURE_SIZE[0], TEXTURE_SIZE[1]), dtype=bool)
@@ -295,6 +319,9 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
     stripes = generate_stripe_texture(
         TEXTURE_SIZE[1], TEXTURE_SIZE[0], num_stripes=10, pattern_idx=0
     )
+    
+    state = ADHERED
+    prev_R = np.eye(3)                            # keep between frames
 
     count = 0
     # Simulation loop
@@ -349,7 +376,7 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
         if count % 60 == 0:
             for tex, provider in zip(textures, providers):
                 tex = generate_stripe_texture(
-                    TEXTURE_SIZE[1], TEXTURE_SIZE[0], num_stripes=1000, pattern_idx=(count // 60) % 4
+                    TEXTURE_SIZE[1], TEXTURE_SIZE[0], num_stripes=10, pattern_idx=(count // 60) % 4
                 )
 
                 # green_mask = np.all(tex == GREEN_RGBA, axis=2)
@@ -360,6 +387,45 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
                 # tex[np.logical_and(half_mask2, white_mask)] = GREEN_RGBA
                 provider.set_data_array(tex, list(tex.shape))
 
+
+        sensor   = sensors[env.name]
+        hits_w   = sensor.data["ray_hits_w"][0]         # (N,3)
+        normals_w= sensor.data["ray_normals_w"][0]      # (N,3)
+
+        if state == ADHERED:
+            if should_detach(hits_w, normals_w):
+                robot.set_kinematic(False)              # become dynamic
+                state = DETACHED
+            else:
+                # operator command → ideal step in body frame (+X)
+                delta_nom = 0.08 * prev_R[:, 0]
+                delta_pos = delta_nom + rng.normal(0, 0.003, 3)     # ±3 mm noise
+                delta_yaw = rng.normal(0, 0.25*np.pi/180)           # ±0.25°
+                pos = robot.data.root_pos_w[0] + delta_pos
+                quat = quat_mul(robot.data.root_quat_w[0],
+                                axis_angle_to_quat([0, 0, 1], delta_yaw))
+
+                sensor.set_pose(pos, quat)                          # predict
+                hits_w = sensor.data["ray_hits_w"][0]
+                normals_w = sensor.data["ray_normals_w"][0]
+
+                new_p, new_q = project_pose(hits_w, normals_w)
+                robot.write_root_pose_to_sim(np.hstack([new_p, new_q]))
+                paint_tex(hits_w, hull_uv_lookup)                   # colour change
+                prev_R = quat_to_mat(new_q)                         # save for next step
+
+        else:   # DETACHED – free fall with gravity / currents
+            robot.apply_force_root_link(F_current)
+            # try to stick again when nearly still & rays hit
+            if np.linalg.norm(robot.data.root_lin_vel_w[0]) < 0.05 \
+            and not should_detach(hits_w, normals_w):
+                robot.set_kinematic(True)
+                state = ADHERED
+                prev_R = quat_to_mat(robot.data.root_quat_w[0])
+
+        scene.write_data_to_sim()
+        sim.step()
+        scene.update(sim_dt)
 
         # Write data to sim
         scene.write_data_to_sim()
@@ -382,6 +448,48 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
 # assert_cfg.spawn.func(
 #     assert_cfg.prim_path, assert_cfg.spawn, translation=assert_cfg.init_state.pos, orientation=assert_cfg.init_state.rot,
 # )
+
+# ---------------------------------------------------------------------------
+#  Adhesion / painting helpers
+# ---------------------------------------------------------------------------
+ADHERED, DETACHED = 0, 1
+
+MAX_RAY_DIST      = 0.15          # [m] – beyond this we assume no deck beneath us
+CURVATURE_THRESH  = 25*np.pi/180  # [rad] – if normals vary more than this, detach
+MIN_HIT_FRAC      = 0.60          # fraction of rays that must hit to stay stuck
+CLEAN_PIXEL       = (255,  48,  48, 255)   # freshly scrubbed hull colour
+
+rng = np.random.default_rng()
+
+def should_detach(hits_w, normals_w):
+    valid = np.linalg.norm(hits_w, axis=1) < MAX_RAY_DIST
+    if valid.mean() < MIN_HIT_FRAC:
+        return True
+    mean_n = normals_w[valid].mean(0)
+    mean_n /= np.linalg.norm(mean_n)
+    angles = np.arccos((normals_w[valid] @ mean_n).clip(-1, 1))
+    return angles.max() > CURVATURE_THRESH
+
+def project_pose(hits_w, normals_w, contact_offset=0.003):
+    p = hits_w.mean(0)
+    n = normals_w.mean(0)
+    n /= np.linalg.norm(n)
+    # choose body +X as projection of previous +X onto tangent
+    t = project_vector(prev_R[:, 0], n)      # prev_R must be in scope
+    R_new = triad_to_R(t, n)
+    q_new = mat_to_quat(R_new)
+    return p + contact_offset * n, q_new
+
+def paint_tex(hits_w, uv_converter):
+    """Mark impacted pixels as 'clean' and upload."""
+    global texture_data
+    uv = uv_converter(hits_w)                # → [N,2] in 0–1
+    x = (uv[:, 0] * (tex_width  - 1)).astype(int)
+    y = (uv[:, 1] * (tex_height - 1)).astype(int)
+    texture_data[y, x] = CLEAN_PIXEL
+    dyn_tex.set_data_array(texture_data, [tex_width, tex_height])
+
+
 
 from myproj.shader import ShaderManager
 def _setup_scene():
@@ -449,30 +557,7 @@ def main(cfg: DictConfig):
 
     run_simulator(sim, scene, providers)
 
-    # Simulate physics
-    while simulation_app.is_running():
-        # perform step
-        sim.step()
 
-
-def register_sensors(scene, sim):
-    for env in scene.envs:
-        base_path = f"{env.prim_path}/Robot/base/lidar_cage"
-        cfg = RayCasterCfg(
-            prim_path=base_path,
-            update_period=1.0 / 60.0,
-            offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.3)),  # 0.3 m up from base
-            mesh_prim_paths=["/World/Ground"],
-            attach_yaw_only=True,
-            pattern_cfg=patterns.GridPatternCfg(
-                resolution=0.05,
-                size=(0.8, 1.0),
-            ),
-            debug_vis=not args_cli.headless,
-        )
-        sensor = RayCaster(cfg)
-        sim.add_sensor(sensor)
-        sensor.initialize()
 
 
 

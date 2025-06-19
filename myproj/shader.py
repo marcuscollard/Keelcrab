@@ -31,7 +31,7 @@ class ShaderManager:
             *,
             tex_name="live_hull",
             tex_rgba=None,
-            size=(50, 300),              # (H, W)
+            size=(256, 256),              # (H, W)
             mdl_path=MDL_PATH,
             uv_set_index=0               # 0 = primvar:st
         ):
@@ -64,6 +64,12 @@ class ShaderManager:
         shd.CreateInput("diffuse_texture",
                         Sdf.ValueTypeNames.Asset).Set(
                             Sdf.AssetPath(f"dynamic://{tex_name}"))
+        #  0 = repeat   1 = mirror   2 = clamp   3 = black
+        shd.CreateInput("diffuse_texture_wrap_enabled",
+                        Sdf.ValueTypeNames.Bool).Set(True)
+        shd.CreateInput("diffuse_texture_wrap_mode",
+                        Sdf.ValueTypeNames.Int).Set(2)       # ← CLAMP
+
 
         surf = shd.CreateOutput("surface",      Sdf.ValueTypeNames.Token)
         vol  = shd.CreateOutput("volume",       Sdf.ValueTypeNames.Token)
