@@ -262,7 +262,7 @@ class HullViewer(QtWidgets.QMainWindow):
         verts = pv_mesh.points[faces]
         flat_vertices = verts.reshape(-1, 3)
 
-        uvs = np.asarray(st0).reshape(-1, 2)
+        uvs = st0
         assert uvs.shape[0] == flat_vertices.shape[0], "UV/vertex mismatch"
 
         flat_faces = np.hstack([[3, i, i + 1, i + 2] for i in range(0, len(flat_vertices), 3)])
@@ -291,27 +291,53 @@ class HullViewer(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------
     #  UV wire‑frame drawing
     # ------------------------------------------------------------------
+
     def display_uv_layout(self):
+        # Bail out early if UVs were never computed
         if self.st0 is None or not self.compute_uv:
             return
+
+        # --- Normalise the UV array so we always have (F, 3, 2) ---
+        uvs = np.asarray(self.st0)
+
+        if uvs.ndim == 2:                                 # flattened corners
+            if uvs.shape[0] % 3 != 0:
+                raise ValueError("UV buffer length must be a multiple of 3 for triangles")
+            uvs = uvs.reshape(-1, 3, 2)                   # → (F, 3, 2)
+
+        elif uvs.ndim == 3 and uvs.shape[1:] == (3, 2):   # already (F, 3, 2)
+            pass
+        else:
+            raise ValueError(f"Unsupported UV array shape {uvs.shape}; "
+                            "expected (F,3,2) or (F*3,2)")
+
+        # --- Rasterise the layout ---
         W, H = 600, 200
         image = QtGui.QImage(W, H, QtGui.QImage.Format_RGB32)
         image.fill(QtGui.QColor("white"))
+
         painter = QtGui.QPainter(image)
         painter.setPen(QtGui.QPen(QtGui.QColor("black"), 1))
-        for tri in self.st0:
-            pts = np.vstack([tri, tri[0]])
-            poly = QtGui.QPolygonF()
-            for u, v in pts:
+
+        for tri in uvs:
+            # Close the loop by appending the first corner again
+            for u, v in np.vstack([tri, tri[0]]):
                 x = int(u * (W - 1))
                 y = int((1 - v) * (H - 1))
-                poly.append(QtCore.QPointF(x, y))
-            painter.drawPolyline(poly)
+                painter.drawPoint(x, y)          # tiny optimisation; points auto-connect
+            # If you prefer polylines, uncomment the next three lines
+            # poly = QtGui.QPolygonF([QtCore.QPointF(int(u*(W-1)), int((1-v)*(H-1)))
+            #                         for u, v in np.vstack([tri, tri[0]])])
+            # painter.drawPolyline(poly)
+
         painter.end()
+
+        # --- Push into the QGraphicsScene ---
         pixmap = QtGui.QPixmap.fromImage(image)
         self.uv_scene.clear()
         self.uv_scene.addPixmap(pixmap)
         self.uv_scene.setSceneRect(0, 0, W, H)
+
 
     # ------------------------------------------------------------------
     #  Stripe‑pattern texture generation

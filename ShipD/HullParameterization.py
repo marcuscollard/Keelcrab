@@ -1929,6 +1929,9 @@ class Hull_Parameterization:
         st0 = st0.reshape(-1, 2)
         st1 = st1.reshape(-1, 2) if st1 is not None else None
         st2 = st2.reshape(-1, 2) if st2 is not None else None  
+        print(st0.shape)
+        print(st1.shape if st1 is not None else "No deck lid UVs")
+        print(st2.shape if st2 is not None else "No transom UVs")
         return st0, st1, st2, verts_unique, TriIdx, hull_vert_ids
 
 
@@ -2408,7 +2411,7 @@ class Hull_Parameterization:
                     
         HULL.save(namepath + '.stl')
                 
-        return st0[TriIdx[:hullTriangles]] if return_uv else None#, st1[TriIdx[hullTriangles:]], st2[TriIdx[hullTriangles + transomTriangles:]], verts_unique, TriIdx, hull_verts, port_seeds, star_seeds, HULL
+        return st0 if return_uv else None#, st1[TriIdx[hullTriangles:]], st2[TriIdx[hullTriangles + transomTriangles:]], verts_unique, TriIdx, hull_verts, port_seeds, star_seeds, HULL
     
  
     def gen_USD(self, NUM_WL = 50, PointsPerWL = 300, bit_AddTransom = 1, bit_AddDeckLid = 0, bit_RefineBowAndStern = 0, namepath = 'Hull_Mesh', require_convex=False):
