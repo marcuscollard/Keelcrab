@@ -262,7 +262,11 @@ class HullViewer(QtWidgets.QMainWindow):
         verts = pv_mesh.points[faces]
         flat_vertices = verts.reshape(-1, 3)
 
-        uvs = st0
+        # print(st0.shape)
+        # print(faces.shape[0])
+        # uvs = st0[:faces.shape[0]*3]
+        # print(uvs.shape)
+        # print(flat_vertices.shape)
         assert uvs.shape[0] == flat_vertices.shape[0], "UV/vertex mismatch"
 
         flat_faces = np.hstack([[3, i, i + 1, i + 2] for i in range(0, len(flat_vertices), 3)])

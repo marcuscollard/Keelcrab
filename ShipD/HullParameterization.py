@@ -1913,8 +1913,8 @@ class Hull_Parameterization:
             st2[transom_v, 0] = (verts_unique[transom_v, 1] - y_min) / (y_max - y_min)
             st2[transom_v, 1] = (verts_unique[transom_v, 2] - z_min) / (z_max - z_min)
             
-            st1 = st1[TriIdx[hullTriangles:hullTriangles + transomTriangles]]
-            st2 = st2[TriIdx[hullTriangles + transomTriangles:]]
+            # st1 = st1[TriIdx[hullTriangles:hullTriangles + transomTriangles]]
+            # st2 = st2[TriIdx[hullTriangles + transomTriangles:]]
             
         print(st0.shape, "UV set 0 generated for", len(hull_vert_ids), "hull vertices")
             # print min and max of st0
@@ -1922,7 +1922,8 @@ class Hull_Parameterization:
         if np.isnan(st0).any():
             raise RuntimeError("UV set 0 contains NaN values")
 
-        st0 = st0[TriIdx[:hullTriangles]]  # restrict to the hull triangles only
+        # st0 = st0[TriIdx[:hullTriangles]]  # restrict to the hull triangles only
+        st0 = st0[TriIdx]
         print(st0.shape)
         print(st1.shape if st1 is not None else "No deck lid UVs")
         print(st2.shape if st2 is not None else "No transom UVs")

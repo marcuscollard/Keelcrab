@@ -372,8 +372,6 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
 
 
 
-
-
 #         my_asset: AssetBaseCfg = AssetBaseCfg(
 #         prim_path="/World/scene/my_asset",
 #         init_state=AssetBaseCfg.InitialStateCfg(pos=[0.0, 0.0, 0.0], rot=[1.0, 0.0, 0.0, 0.0]),
