@@ -26,6 +26,51 @@
 
 
 
+def create_texture(prim_path_expr: str):
+
+    # 1. Create a dynamic texture provider with a unique name
+    dyn_tex_name = "paintTex"
+    dyn_tex = omni.ui.DynamicTextureProvider(dyn_tex_name)
+
+    # 2. Initialize the texture data (RGBA image) – e.g. white background 1024x1024
+    tex_width, tex_height = 1024, 1024
+    hull_color = (255, 255, 255, 255)       # RGBA for paint (red in this example)
+    algae_color    = (0, 255, 0, 255)   # RGBA background (white)
+    texture_data = np.full((tex_height, tex_width, 4), algae_color, dtype=np.uint8)
+
+    # Send the initial texture to GPU
+    dyn_tex.set_data_array(texture_data, [tex_width, tex_height])
+
+    # 3. Create an MDL material (OmniPBR) and assign the dynamic texture to it
+    stage = omni.usd.get_context().get_stage()
+    material_path = "/World/AlgaeMaterial"
+    material = UsdShade.Material.Define(stage, material_path)
+    shader = UsdShade.Shader.Define(stage, f"{material_path}/Shader")
+
+    # Configure the shader to use OmniPBR (which has a diffuse texture slot)
+    shader.SetSourceAsset("OmniPBR.mdl", "mdl")
+    shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+    shader.CreateIdAttr("OmniPBR")
+
+    # Set the diffuse texture input to the dynamic texture (using dynamic:// scheme)
+    shader.CreateInput("diffuse_texture", Sdf.ValueTypeNames.Asset)\
+        .Set(f"dynamic://{dyn_tex_name}")  # Link to our DynamicTextureProvider:contentReference[oaicite:2]{index=2}
+
+    prim_paths = sim_utils.find_matching_prim_paths(prim_path_expr)
+
+
+    # manually clone prims if the source prim path is a regex expression
+    with Sdf.ChangeBlock():
+        get_hull_USD()
+        for prim_path in prim_paths:
+            # spawn single instance
+            prim_spec = Sdf.CreatePrimInLayer(stage.GetRootLayer(), prim_path)
+            # Connect shader to material and bind to mesh
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            ground_prim = prim_spec  # path to the curved surface prim
+            ground_prim.ApplyAPI(UsdShade.MaterialBindingAPI)           # ensure binding API is present
+            UsdShade.MaterialBindingAPI(ground_prim).Bind(material)
+
 
 
 def inject_USDs(cfg: DictConfig, prim_path_expr: str):

@@ -30,6 +30,9 @@ args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+# my imports
+from myproj.shader import ShaderManager
+from robot import MeshManager, HullCrawler
 
 # for Isaac Sim
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
@@ -86,53 +89,6 @@ from isaaclab.sim import schemas as sim_schemas, spawners as sim_spawners
 # from omni.isaac.lab.scene import InteractiveScene, InteractiveSceneCfg
 # from omni.isaac.lab.sim import SimulationContext
 # from omni.isaac.lab.assets import AssetBaseCfg
-
-
-
-def create_texture(prim_path_expr: str):
-
-    # 1. Create a dynamic texture provider with a unique name
-    dyn_tex_name = "paintTex"
-    dyn_tex = omni.ui.DynamicTextureProvider(dyn_tex_name)
-
-    # 2. Initialize the texture data (RGBA image) – e.g. white background 1024x1024
-    tex_width, tex_height = 1024, 1024
-    hull_color = (255, 255, 255, 255)       # RGBA for paint (red in this example)
-    algae_color    = (0, 255, 0, 255)   # RGBA background (white)
-    texture_data = np.full((tex_height, tex_width, 4), algae_color, dtype=np.uint8)
-
-    # Send the initial texture to GPU
-    dyn_tex.set_data_array(texture_data, [tex_width, tex_height])
-
-    # 3. Create an MDL material (OmniPBR) and assign the dynamic texture to it
-    stage = omni.usd.get_context().get_stage()
-    material_path = "/World/AlgaeMaterial"
-    material = UsdShade.Material.Define(stage, material_path)
-    shader = UsdShade.Shader.Define(stage, f"{material_path}/Shader")
-
-    # Configure the shader to use OmniPBR (which has a diffuse texture slot)
-    shader.SetSourceAsset("OmniPBR.mdl", "mdl")
-    shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
-    shader.CreateIdAttr("OmniPBR")
-
-    # Set the diffuse texture input to the dynamic texture (using dynamic:// scheme)
-    shader.CreateInput("diffuse_texture", Sdf.ValueTypeNames.Asset)\
-        .Set(f"dynamic://{dyn_tex_name}")  # Link to our DynamicTextureProvider:contentReference[oaicite:2]{index=2}
-
-    prim_paths = sim_utils.find_matching_prim_paths(prim_path_expr)
-
-
-    # manually clone prims if the source prim path is a regex expression
-    with Sdf.ChangeBlock():
-        get_hull_USD()
-        for prim_path in prim_paths:
-            # spawn single instance
-            prim_spec = Sdf.CreatePrimInLayer(stage.GetRootLayer(), prim_path)
-            # Connect shader to material and bind to mesh
-            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
-            ground_prim = prim_spec  # path to the curved surface prim
-            ground_prim.ApplyAPI(UsdShade.MaterialBindingAPI)           # ensure binding API is present
-            UsdShade.MaterialBindingAPI(ground_prim).Bind(material)
             
             
 # 1) collect every USD in folder (runs at import time)
@@ -230,47 +186,6 @@ class SceneCfgOverride(InteractiveSceneCfg):
     )
 
 
-
-def generate_stripe_texture(width, height, num_stripes, pattern_idx):
-    """
-    Generate a stripe texture as a NumPy RGBA array.
-
-    Parameters:
-        width (int): Width of the texture
-        height (int): Height of the texture
-        num_stripes (int): Number of stripes
-        pattern_idx (int): Pattern selector:
-            0 = horizontal
-            1 = vertical
-            2 = diagonal /
-            3 = diagonal \
-
-    Returns:
-        np.ndarray: Texture of shape (height, width, 4) dtype=uint8
-    """
-    u = np.linspace(0.0, 1.0, width, endpoint=False)
-    v = np.linspace(0.0, 1.0, height, endpoint=False)
-    uu, vv = np.meshgrid(u, v)
-
-    if pattern_idx == 0:
-        pattern = ((vv * num_stripes) % 1.0) < 0.5
-    elif pattern_idx == 1:
-        pattern = ((uu * num_stripes) % 1.0) < 0.5
-    elif pattern_idx == 2:
-        pattern = (((uu + vv) * num_stripes) % 1.0) < 0.5
-    else:
-        pattern = ((((uu - vv) * num_stripes) % 1.0 + 1.0) % 1.0) < 0.5
-
-    # Stripe in blue channel, UV info in R and G, full alpha
-    tex = np.zeros((height, width, 4), dtype=np.uint8)
-    tex[..., 0] = (uu * 255).astype(np.uint8)             # Red = U
-    tex[..., 1] = (vv * 255).astype(np.uint8)             # Green = V
-    tex[..., 2] = pattern.astype(np.uint8) * 255          # Blue = stripe
-    tex[..., 3] = 255                                     # Alpha = opaque
-
-    return tex
-
-
 def register_sensors(scene, sim):
     # register one downward RayCaster per environment
     sensors = {}
@@ -293,16 +208,20 @@ def register_sensors(scene, sim):
 
 
 
-def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
+def run_simulator(sim: SimulationContext, scene: InteractiveScene, robots, managers):
     """Runs the simulation loop and updates dynamic textures."""
     # local texture buffers mirroring the provider contents
-    textures = [np.full((*TEXTURE_SIZE, 4), GREEN_RGBA, dtype=np.uint8)
-                for _ in providers]
+    # textures = [np.full((*TEXTURE_SIZE, 4), GREEN_RGBA, dtype=np.uint8)
+    #             for _ in providers]
+    
+    
+    
     """Runs the simulation loop."""
     # Extract scene entities
     # note: we only do this here for readability.
 
-    hull = scene['hull']
+    hull = scene['Hull']
+    
 
 
     #rigid = hull.rigid_objects['hull']
@@ -316,13 +235,10 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
     half_mask[:, :TEXTURE_SIZE[1] // 2 ] = True
     half_mask2[:TEXTURE_SIZE[0] // 2 , :] = True
     
-    stripes = generate_stripe_texture(
-        TEXTURE_SIZE[1], TEXTURE_SIZE[0], num_stripes=10, pattern_idx=0
-    )
+    # stripes = generate_stripe_texture(
+    #     TEXTURE_SIZE[1], TEXTURE_SIZE[0], num_stripes=10, pattern_idx=0
+    # )
     
-    state = ADHERED
-    prev_R = np.eye(3)                            # keep between frames
-
     count = 0
     # Simulation loop
     while simulation_app.is_running():
@@ -333,7 +249,7 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
         # print("Ray cast hit results: ", scene["ray_caster"].data) #.ray_hits_w)
 
         # Reset
-        if count % 100 == 0:
+        if count % 20000 == 0:
             # reset counter
             count = 0
             # reset the scene entities
@@ -392,37 +308,6 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
         hits_w   = sensor.data["ray_hits_w"][0]         # (N,3)
         normals_w= sensor.data["ray_normals_w"][0]      # (N,3)
 
-        if state == ADHERED:
-            if should_detach(hits_w, normals_w):
-                robot.set_kinematic(False)              # become dynamic
-                state = DETACHED
-            else:
-                # operator command → ideal step in body frame (+X)
-                delta_nom = 0.08 * prev_R[:, 0]
-                delta_pos = delta_nom + rng.normal(0, 0.003, 3)     # ±3 mm noise
-                delta_yaw = rng.normal(0, 0.25*np.pi/180)           # ±0.25°
-                pos = robot.data.root_pos_w[0] + delta_pos
-                quat = quat_mul(robot.data.root_quat_w[0],
-                                axis_angle_to_quat([0, 0, 1], delta_yaw))
-
-                sensor.set_pose(pos, quat)                          # predict
-                hits_w = sensor.data["ray_hits_w"][0]
-                normals_w = sensor.data["ray_normals_w"][0]
-
-                new_p, new_q = project_pose(hits_w, normals_w)
-                robot.write_root_pose_to_sim(np.hstack([new_p, new_q]))
-                paint_tex(hits_w, hull_uv_lookup)                   # colour change
-                prev_R = quat_to_mat(new_q)                         # save for next step
-
-        else:   # DETACHED – free fall with gravity / currents
-            robot.apply_force_root_link(F_current)
-            # try to stick again when nearly still & rays hit
-            if np.linalg.norm(robot.data.root_lin_vel_w[0]) < 0.05 \
-            and not should_detach(hits_w, normals_w):
-                robot.set_kinematic(True)
-                state = ADHERED
-                prev_R = quat_to_mat(robot.data.root_quat_w[0])
-
         scene.write_data_to_sim()
         sim.step()
         scene.update(sim_dt)
@@ -449,51 +334,29 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, providers):
 #     assert_cfg.prim_path, assert_cfg.spawn, translation=assert_cfg.init_state.pos, orientation=assert_cfg.init_state.rot,
 # )
 
-# ---------------------------------------------------------------------------
-#  Adhesion / painting helpers
-# ---------------------------------------------------------------------------
-ADHERED, DETACHED = 0, 1
 
-MAX_RAY_DIST      = 0.15          # [m] – beyond this we assume no deck beneath us
-CURVATURE_THRESH  = 25*np.pi/180  # [rad] – if normals vary more than this, detach
-MIN_HIT_FRAC      = 0.60          # fraction of rays that must hit to stay stuck
-CLEAN_PIXEL       = (255,  48,  48, 255)   # freshly scrubbed hull colour
-
-rng = np.random.default_rng()
-
-def should_detach(hits_w, normals_w):
-    valid = np.linalg.norm(hits_w, axis=1) < MAX_RAY_DIST
-    if valid.mean() < MIN_HIT_FRAC:
-        return True
-    mean_n = normals_w[valid].mean(0)
-    mean_n /= np.linalg.norm(mean_n)
-    angles = np.arccos((normals_w[valid] @ mean_n).clip(-1, 1))
-    return angles.max() > CURVATURE_THRESH
-
-def project_pose(hits_w, normals_w, contact_offset=0.003):
-    p = hits_w.mean(0)
-    n = normals_w.mean(0)
-    n /= np.linalg.norm(n)
-    # choose body +X as projection of previous +X onto tangent
-    t = project_vector(prev_R[:, 0], n)      # prev_R must be in scope
-    R_new = triad_to_R(t, n)
-    q_new = mat_to_quat(R_new)
-    return p + contact_offset * n, q_new
-
-def paint_tex(hits_w, uv_converter):
-    """Mark impacted pixels as 'clean' and upload."""
-    global texture_data
-    uv = uv_converter(hits_w)                # → [N,2] in 0–1
-    x = (uv[:, 0] * (tex_width  - 1)).astype(int)
-    y = (uv[:, 1] * (tex_height - 1)).astype(int)
-    texture_data[y, x] = CLEAN_PIXEL
-    dyn_tex.set_data_array(texture_data, [tex_width, tex_height])
-
-
-
-from myproj.shader import ShaderManager
 def _setup_scene():
     pass
+    
+
+def randomize_shape_color(prim_path_expr: str):
+    """Randomize the color of the geometry."""
+    # acquire stage
+    stage = omni.usd.get_context().get_stage()
+    # resolve prim paths for spawning and cloning
+    prim_paths = sim_utils.find_matching_prim_paths(prim_path_expr)
+    # manually clone prims if the source prim path is a regex expression
+    with Sdf.ChangeBlock():
+        for prim_path in prim_paths:
+            # spawn single instance
+            prim_spec = Sdf.CreatePrimInLayer(stage.GetRootLayer(), prim_path)
+
+            # DO YOUR OWN OTHER KIND OF RANDOMIZATION HERE!
+            # Note: Just need to acquire the right attribute about the property you want to set
+            # Here is an example on setting color randomly
+            color_spec = prim_spec.GetAttributeAtPath(prim_path + "/geometry/material/Shader.inputs:diffuseColor")
+            color_spec.default = Gf.Vec3f(random.random(), random.random(), random.random())
+
     
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -533,16 +396,31 @@ def main(cfg: DictConfig):
     with Timer("[INFO] Time to create scene: "):
         scene = InteractiveScene(scene_cfg)      # stage now exists
 
+
+    # get the components
+    hull_objs = scene["hull", ...]    # returns a list of Hull components across all envs
+    robot_objs = scene["robot", ...]
+    
     # 2. Gather the prim paths you want to paint.
     #    If your hull asset’s root prim is called "hull", every clone
     #    will live under /World/envs/env_0/hull, /World/envs/env_1/hull, …
     hull_paths = [f"/World/envs/env_{i}/hull" for i in range(scene_cfg.num_envs)]
-
+    
     # 3. Create the provider + material and bind it to those prims
-    providers = []
+    managers = []
     for idx in range(scene_cfg.num_envs):
         provider = ShaderManager.make_dynamic_hull(stage=scene.stage, prim_path=hull_paths[idx], idx=idx)
-        providers.append(provider)
+        
+        managers.append(MeshManager(provider, scene, idx, TEXTURE_SIZE))
+        # providers.append(provider)
+        
+        
+    robots = []
+    for idx, robot in enumerate(robot_objs):
+        # create the robot
+        robot = HullCrawler(scene, idx, ray_sensor_key="ray_caster_cfg", robot_key="Robot")
+        robots.append(robot)
+
 
     with Timer("[INFO] Time to randomize scene: "):
         # DO YOUR OWN OTHER KIND OF RANDOMIZATION HERE!
@@ -555,7 +433,7 @@ def main(cfg: DictConfig):
     # Now we are ready!
     print("[INFO]: Setup complete...")
 
-    run_simulator(sim, scene, providers)
+    run_simulator(sim, scene, robots, managers)
 
 
 
