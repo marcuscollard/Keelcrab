@@ -37,8 +37,8 @@ def startup(parser=None, prelaunch_callback=None, register_cfgs=True):
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
 
-    if register_cfgs:
-        import wheeledlab_tasks # env configs
-        import wheeledlab_rl.configs.runs # run configs
+    # if register_cfgs:
+    #     import wheeledlab_tasks # env configs
+    #     import wheeledlab_rl.configs.runs # run configs
 
     return simulation_app, args_cli

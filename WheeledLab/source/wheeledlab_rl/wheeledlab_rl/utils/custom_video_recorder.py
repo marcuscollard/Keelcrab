@@ -6,7 +6,7 @@ import gymnasium as gym
 import wandb
 from gymnasium import logger
 from gymnasium.core import ActType, ObsType
-from gymnasium.wrappers.rendering import RecordVideo
+from gymnasium.wrappers.record_video import RecordVideo
 
 
 class CustomRecordVideo(RecordVideo):

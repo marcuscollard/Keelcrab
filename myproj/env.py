@@ -7,6 +7,10 @@ import numpy as np
 import sys
 import os, glob
 
+import warnings
+warnings.filterwarnings("ignore")
+
+
 # for ship
 import tempfile
 from ShipD.HullParameterization import Hull_Parameterization as HP
@@ -33,6 +37,22 @@ simulation_app = app_launcher.app
 # my imports
 from myproj.shader import ShaderManager
 from robot import MeshManager, HullCrawler
+
+import carb.settings
+settings = carb.settings.get_settings()
+
+# Hide dev pop-ups & deprecation nags
+settings.set("/app/enableDeveloperWarnings", False)
+settings.set("/app/scripting/ignoreWarningDialog", True)
+
+# Silence the UI console, too
+for key in ("verbose", "info", "warning", "error", "fatal"):
+    settings.set(f"/exts/omni.kit.window.console/logFilter/{key}", False)
+
+# Global log thresholds
+settings.set("/log/outputStreamLevel", "Error")
+settings.set("/log/fileLogLevel",   "Error")
+settings.set("/log/debugConsoleLevel", "Fatal")
 
 # for Isaac Sim
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
