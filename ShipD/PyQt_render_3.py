@@ -66,7 +66,7 @@ class HullViewer(QtWidgets.QMainWindow):
         # 2)  Texture / UV settings
         # --------------------------------------------------------------
         self.texture_height = 200
-        self.texture_width = 3 * self.texture_height  # 6:1 aspect ratio
+        self.texture_width = 5 * self.texture_height  # 6:1 aspect ratio
         self.num_stripes = 10
         self.compute_uv = True  # toggled via View‑menu
 
@@ -264,7 +264,7 @@ class HullViewer(QtWidgets.QMainWindow):
 
         # print(st0.shape)
         # print(faces.shape[0])
-        # uvs = st0[:faces.shape[0]*3]
+        uvs = st0[:faces.shape[0]*3]
         # print(uvs.shape)
         # print(flat_vertices.shape)
         assert uvs.shape[0] == flat_vertices.shape[0], "UV/vertex mismatch"

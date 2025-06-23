@@ -2,3 +2,6 @@ sam-hq/sam-hq2/checkpoints/*
 *.mp4
 *.DS_Store
 .DS_Store
+
+# Ignore all other files
+# .python.env
