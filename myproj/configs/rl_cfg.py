@@ -2,7 +2,7 @@ from isaaclab.utils import configclass
 
 from dataclasses import MISSING
 
-from . import TrainConfig, RunConfig, AgentSetup
+from .. import TrainConfig, RunConfig, AgentSetup
 
 @configclass
 class RLTrainConfig(TrainConfig):

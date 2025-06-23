@@ -82,8 +82,6 @@ class MeshManager:
 
 
 
-
-
 class HullCrawler:
     """High-level interface around the crawler robot in *one* environment."""
 
